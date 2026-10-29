@@ -179,7 +179,7 @@ class ExhibitionFrameworkTests(unittest.TestCase):
         materials['projectName']='FORMAL_LATER'
         self.assertEqual(team_client.post('/api/submission',{'expectedVersion':1,'status':'submitted','materials':materials})[0],200)
         self.assertEqual(self.admin.post('/api/admin/teams',{
-            'id':team_id,'number':1,'name':'Renamed after freeze','project':'FORMAL_LATER','track':'Changed track'})[0],200)
+            'id':team_id,'number':1,'name':'Renamed after freeze','project':'FORMAL_LATER','track':'城市与社区问题'})[0],200)
         self.assertEqual(self.judge.get(self.judge_path)[1]['teams'][0]['materialSnapshot'],captured)
         self.window(False)
         current=self.admin_stage()
@@ -215,7 +215,7 @@ class ExhibitionFrameworkTests(unittest.TestCase):
         self.assertEqual(refreshed['submissionVersion'],2)
         refreshed_team=self.judge.get(self.judge_path)[1]['teams'][0]
         self.assertEqual(refreshed_team['name'],'Renamed after freeze')
-        self.assertEqual(refreshed_team['track'],'Changed track')
+        self.assertEqual(refreshed_team['track'],'城市与社区问题')
 
     def test_concurrent_edits_accept_exactly_one_version(self):
         teams,_,_=self.configure()

@@ -41,8 +41,9 @@ CREATE TABLE IF NOT EXISTS judging_reviews (
 
 
 class JudgingService:
-    def __init__(self, *, clock, text, audit, touch):
+    def __init__(self, *, clock, text, audit, touch, history=None, enrich_team=None):
         self.clock,self.text,self.audit,self.touch=clock,text,audit,touch
+        self.history,self.enrich_team=history,enrich_team
 
     def initialize(self, db):
         db.executescript(SCHEMA)
@@ -85,15 +86,20 @@ class JudgingService:
         result={"teamId":row["team_id"],"version":row["version"],"draft":draft,"submitted":submitted,
                 "recused":bool(row["recused"]),"updatedAt":row["updated_at"],
                 "hasUnsubmittedChanges":submitted is not None and draft is not None and draft["feedback"]!=submitted["feedback"]}
+        result.update(invalidated=bool(row['invalidated']) if 'invalidated' in row.keys() else False,
+                      invalidatedReason=row['invalidated_reason'] if 'invalidated_reason' in row.keys() else '')
         if include_judge:
             result["judgeId"]=row["judge_id"]
         return result
 
     def reviews(self, db, run_id, judge_id=None):
+        sql="""SELECT r.*,COALESCE(v.invalidated,0) AS invalidated,COALESCE(v.reason,'') AS invalidated_reason
+          FROM judging_reviews r LEFT JOIN judging_review_validity v
+          ON v.run_id=r.run_id AND v.judge_id=r.judge_id AND v.team_id=r.team_id WHERE r.run_id=?"""
         if judge_id is None:
-            rows=db.execute("SELECT * FROM judging_reviews WHERE run_id=? ORDER BY team_id,judge_id",(run_id,))
+            rows=db.execute(sql+' ORDER BY r.team_id,r.judge_id',(run_id,))
         else:
-            rows=db.execute("SELECT * FROM judging_reviews WHERE run_id=? AND judge_id=? ORDER BY team_id",(run_id,judge_id))
+            rows=db.execute(sql+' AND r.judge_id=? ORDER BY r.team_id',(run_id,judge_id))
         return [self.review_view(row,include_judge=judge_id is None) for row in rows]
 
     def require(self, actor, role):
@@ -120,8 +126,9 @@ class JudgingService:
                 "teams":teams,"judges":judges,"reviews":self.reviews(db,state["run_id"]),"blockers":[BLOCKER]}
 
     def board(self, db, state):
-        counts={row["team_id"]:row["count"] for row in db.execute("""SELECT team_id,COUNT(*) AS count FROM judging_reviews
-          WHERE run_id=? AND submitted_feedback IS NOT NULL AND recused=0 GROUP BY team_id""",(state["run_id"],))}
+        counts={row["team_id"]:row["count"] for row in db.execute("""SELECT r.team_id,COUNT(*) AS count FROM judging_reviews r
+          LEFT JOIN judging_review_validity v ON v.run_id=r.run_id AND v.judge_id=r.judge_id AND v.team_id=r.team_id
+          WHERE r.run_id=? AND r.submitted_feedback IS NOT NULL AND r.recused=0 AND COALESCE(v.invalidated,0)=0 GROUP BY r.team_id""",(state["run_id"],))}
         teams=[{key:team[key] for key in ("id","number","name","project","track")} |
                {"reviewCount":counts.get(team["id"],0),"score":None,"rank":None} for team in self.teams(db,state["run_id"])]
         return {"stage":self.stage_view(state),"window":self.window(state),"teams":teams,
@@ -149,7 +156,7 @@ class JudgingService:
         row=db.execute("SELECT id,number,name,project,track FROM teams WHERE id=?",(team_id,)).fetchone()
         if not row:
             raise APIError(404,"队伍不存在")
-        result=dict(row)
+        result=self.enrich_team(db,dict(row)) if self.enrich_team else dict(row)
         result["materialSnapshot"]=None
         if materials:
             saved=db.execute("SELECT submitted_json,submitted_version,submitted_at FROM submissions WHERE team_id=?",(team_id,)).fetchone()
@@ -167,6 +174,8 @@ class JudgingService:
         team_ids=self.identifier_list(body["teamIds"],"队伍名单")
         judge_ids=self.identifier_list(body["judgeIds"],"评委名单")
         teams=[self.capture_team(db,team_id) for team_id in team_ids]
+        before={'teamIds':[team['id'] for team in self.teams(db,state['run_id'])],
+                'judgeIds':[row[0] for row in db.execute('SELECT judge_id FROM judging_grants WHERE run_id=? ORDER BY judge_id',(state['run_id'],))]}
         for judge_id in judge_ids:
             if not db.execute("SELECT 1 FROM accounts WHERE id=? AND role='judge' AND active=1",(judge_id,)).fetchone():
                 raise APIError(400,"评委不存在或已停用")
@@ -175,7 +184,8 @@ class JudgingService:
         for team in teams:
             db.execute("INSERT INTO judging_roster VALUES (?,?,?)",(state["run_id"],team["id"],json.dumps(team,ensure_ascii=False)))
         db.executemany("INSERT INTO judging_grants VALUES (?,?)",[(state["run_id"],judge_id) for judge_id in judge_ids])
-        self.admin_change(db,actor,state,"roster",{"teamCount":len(teams),"judgeCount":len(judge_ids)})
+        self.admin_change(db,actor,state,"roster",{"teamCount":len(teams),"judgeCount":len(judge_ids),'before':before,
+                          'after':{'teamIds':team_ids,'judgeIds':judge_ids}})
 
     def set_window(self, db, actor, state, body):
         self.exact_fields(body,("expectedRevision","open","deadline"))
@@ -196,7 +206,8 @@ class JudgingService:
                     db.execute("UPDATE judging_roster SET snapshot_json=? WHERE run_id=? AND team_id=?",(json.dumps(snapshot,ensure_ascii=False),state["run_id"],team["id"]))
                 db.execute("UPDATE judging_runs SET frozen_at=? WHERE id=?",(current,state["run_id"]))
         db.execute("UPDATE judging_stages SET open=?,deadline=? WHERE stage=?",(int(body["open"]),deadline,state["stage"]))
-        self.admin_change(db,actor,state,"window",{"open":body["open"],"deadline":deadline})
+        self.admin_change(db,actor,state,"window",{"open":body["open"],"deadline":deadline,
+                          'before':{'open':bool(state['open']),'deadline':state['deadline']},'after':{'open':body['open'],'deadline':deadline}})
 
     def reset(self, db, actor, state, body):
         self.exact_fields(body,("expectedRevision","reason"))
@@ -210,7 +221,9 @@ class JudgingService:
             db.execute("INSERT INTO judging_roster VALUES (?,?,?)",(new_id,team["id"],json.dumps(current,ensure_ascii=False)))
         db.execute("INSERT INTO judging_grants SELECT ?,judge_id FROM judging_grants WHERE run_id=?",(new_id,state["run_id"]))
         db.execute("UPDATE judging_stages SET run_id=?,open=0,deadline=NULL WHERE stage=?",(new_id,state["stage"]))
-        self.admin_change(db,actor,state,"reset",{"oldRunId":state["run_id"],"newRunId":new_id,"reason":reason})
+        self.admin_change(db,actor,state,"reset",{"oldRunId":state["run_id"],"newRunId":new_id,"reason":reason,
+                          'before':{'runId':state['run_id'],'open':bool(state['open']),'deadline':state['deadline']},
+                          'after':{'runId':new_id,'open':False,'deadline':None}})
 
     def admin_change(self, db, actor, state, action, metadata):
         db.execute("UPDATE judging_stages SET revision=revision+1 WHERE stage=?",(state["stage"],))
@@ -253,6 +266,10 @@ class JudgingService:
           ON CONFLICT(run_id,judge_id,team_id) DO UPDATE SET version=excluded.version,draft_feedback=excluded.draft_feedback,
           submitted_feedback=excluded.submitted_feedback,submitted_at=excluded.submitted_at,recused=excluded.recused,updated_at=excluded.updated_at""",
           (state["run_id"],actor["id"],team_id,version+1,draft,submitted,submitted_at,int(status=="recused"),current))
+        if self.history:
+            after=db.execute('SELECT * FROM judging_reviews WHERE run_id=? AND judge_id=? AND team_id=?',(state['run_id'],actor['id'],team_id)).fetchone()
+            self.history(db,actor,state['run_id'],actor['id'],team_id,'review.'+status,
+                         self.review_view(previous,include_judge=True) if previous else None,self.review_view(after,include_judge=True))
         self.audit(db,actor,"judging.review."+status,team_id,{"stage":state["stage"],"runId":state["run_id"],"version":version+1})
         self.touch(db)
         return {"ok":True,**self.judge_view(db,actor,state)}

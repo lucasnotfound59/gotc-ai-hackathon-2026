@@ -11,8 +11,10 @@ python deploy/deploy.py --execute
 Commit this project's source first. The script records the Git commit SHA, content
 digest, release archive SHA-256, URL and health result in `.runtime/deployment.json`.
 Without a project-owned Git repository it records the source content SHA-256.
-The release includes only public HTML/CSS/JS, approved assets/downloads and backend
-Python source. It excludes data, SQLite databases, private access files and QA.
+The release includes public HTML/CSS/JS (including `platform-admin.js`), approved
+assets/downloads, backend Python source and `scripts/backup_event.py`. The backup
+script is an operator CLI, not an HTTP download. Data, databases, private access
+files, tests and QA are excluded.
 
 The deploy tool needs local Paramiko and reuses the existing verified SSH identity
 at `~/.ssh/realtalk_ecs` with `~/.ssh/known_hosts` and strict host-key checking.

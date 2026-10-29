@@ -65,7 +65,7 @@ MemoryMax=512M
 [Install]
 WantedBy=multi-user.target
 '''
-FILES = {'index.html', 'styles.css', 'app.js', 'platform.html', 'platform.css', 'platform.js', 'favicon.svg'}
+FILES = {'index.html', 'styles.css', 'app.js', 'platform.html', 'platform.css', 'platform.js', 'platform-admin.js', 'favicon.svg'}
 ASSETS = {'.webp', '.png', '.jpg', '.jpeg', '.svg', '.ico', '.woff', '.woff2'}
 
 
@@ -84,7 +84,7 @@ def allowed(name):
     if any(re.search(r'(?:secret|credential|admin-access|production\.env)', p, re.I) for p in parts):
         return False
     suffix = Path(name).suffix.lower()
-    return (name in FILES or
+    return (name in FILES or name == 'scripts/backup_event.py' or
             (parts[0] == 'server' and suffix == '.py' and len(parts) == 2 and not parts[-1].startswith('test')) or
             (parts[0] == 'assets' and suffix in ASSETS) or
             (parts[0] == 'downloads' and suffix in {'.ics', '.txt'}))

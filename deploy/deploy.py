@@ -33,7 +33,7 @@ def public_files():
         if not path.is_file() or path.is_symlink():
             raise RuntimeError(f'Required release file is missing or a symlink: {name}')
         files.append(path)
-    for folder in ['assets', 'downloads', 'server']:
+    for folder in ['assets', 'downloads', 'server', 'scripts']:
         path = PROJECT / folder
         if path.exists():
             if path.is_symlink():

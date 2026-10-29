@@ -74,7 +74,7 @@ class APITests(unittest.TestCase):
         self.temp.cleanup()
 
     def team(self, number=1, name="真实队伍", **more):
-        status, body, _ = self.admin.post("/api/admin/teams", {"number": number, "name": name, "project": "真实问题", "track": "AI校园", **more})
+        status, body, _ = self.admin.post("/api/admin/teams", {"number": number, "name": name, "project": "真实问题", "track": "AI for Science", **more})
         self.assertEqual(status, 200, body)
         return body["team"]["id"]
 
@@ -198,7 +198,7 @@ class APITests(unittest.TestCase):
         teams = [self.team(i + 1, f"队伍{i + 1}") for i in range(4)]
         audience, invitation = self.invitation("audience", "PRIVATE_AUDIENCE")
         self.assertEqual(audience.post("/api/vote", {"teamId": teams[0]})[0], 409)
-        self.open()
+        self.assertEqual(self.admin.post("/api/admin/settings", {"votingOpen": True})[0], 200)
         with ThreadPoolExecutor(max_workers=4) as pool:
             results = list(pool.map(lambda team: audience.post("/api/vote", {"teamId": team})[0], teams))
         self.assertEqual(results.count(200), 3)
@@ -226,7 +226,7 @@ class APITests(unittest.TestCase):
             scores = [20, 20, 20, 15, 15, 10 if i < 2 else 0]
             self.assertEqual(judge.post("/api/score", {"teamId": team_id, "scores": scores, "status": "submitted", "feedback": "@FORMULA"})[0], 200)
         self.assertEqual([t["rank"] for t in self.public.get("/api/board")[1]["teams"]], [1, 1, 3])
-        status, body, _ = self.admin.post("/api/admin/teams", {"id": ids[1], "number": 2, "name": "Updated", "project": "Real", "track": "New"})
+        status, body, _ = self.admin.post("/api/admin/teams", {"id": ids[1], "number": 2, "name": "Updated", "project": "Real", "track": "城市与社区问题"})
         self.assertEqual(status, 200)
         status, content, headers = self.admin.get("/api/admin/export")
         self.assertEqual(status, 200)

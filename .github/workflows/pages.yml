@@ -27,6 +27,7 @@ jobs:
         run: |
           node --check app.js
           node --check platform.js
+          node --check platform-admin.js
           node --test tests/*.test.mjs
           python -B scripts/check_site.py
           python -B -m unittest discover -s server -p 'test_*.py'

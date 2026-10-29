@@ -23,7 +23,7 @@ Nginx 应将 `/gotc/` **保留完整路径**代理到 `http://127.0.0.1:5274`，
 
 本地浏览器测试可将 `GOTC_PUBLIC_ORIGIN` 设为 `http://127.0.0.1:5274`。此时 Cookie 不带 Secure；HTTPS 正式地址自动启用 Secure。身份 Cookie 为 HttpOnly、SameSite=Strict，12 小时过期；邀请码和会话令牌的明文均不存入数据库。
 
-组织方可以在私有数据目录放置 `shared-login-codes.json`，用 `admin` 和/或 `judge` 字段配置统一登录码。真实值仅放在该私有文件，不进入 Git 或公开网页。启动时会同步对应角色的密码哈希，使已更改密码账号的旧会话失效，保留账号 ID、评分和投票。若配置了评委统一码且还没有任何评委身份，自动创建“评委01”；后续新建评委身份沿用统一码。多位评委共用登录码时，正确输入登录码后选择自己的身份，各自评分仍分开保存。观众邀请码不受影响。
+组织方可以在私有数据目录放置 `shared-login-codes.json`，用 `admin` 和/或 `judge` 字段配置统一登录码。真实值仅放在该私有文件，不进入 Git 或公开网页。启动时同步仍使用统一码的账号哈希，使已更改密码账号的旧会话失效，保留账号 ID、评分和投票。若配置了评委统一码且还没有任何评委身份，自动创建“评委01”；后续新建评委身份沿用统一码。多位评委共用登录码时，正确输入登录码后选择自己的身份，各自记录分开保存。单独重发的评委会退出统一码，使用自己的新码；启动会保留该独立码，不再恢复统一码，也不出现在统一码的身份选择中。观众邀请码不受统一码影响。
 
 ## API 合同
 
@@ -40,8 +40,8 @@ Nginx 应将 `/gotc/` **保留完整路径**代理到 `http://127.0.0.1:5274`，
 | GET `/api/audience` | 观众 | `{teams,votedTeamIds,voteLimit:3,votingOpen,name}` |
 | POST `/api/vote` | 观众 | `{teamId}` → `{ok,alreadyVoted}` |
 | GET `/api/admin` | 管理员 | `{teams,judges,audience,config,stats}` |
-| POST `/api/admin/settings` | 管理员 | `scoringOpen`/`resultsPublished`/`submissionsOpen` 布尔值、`minJudges` 1–50 整数、`submissionDeadline` Unix 毫秒整数或 null，均可单独更新 → `{ok,config}` |
-| POST `/api/admin/teams` | 管理员 | `{id?,number,name,project?,track?}` → `{ok,team}` |
+| POST `/api/admin/settings` | 管理员 | `scoringOpen`/`resultsPublished`/`submissionsOpen`/`votingOpen` 布尔值、`minJudges` 1–50 整数、`submissionDeadline`/`votingDeadline` Unix 毫秒整数或 null，均可单独更新 → `{ok,config}` |
+| POST `/api/admin/teams` | 管理员 | `{id?,number,name,project?,track?,status?,statusReason?,booth?,roadshowOrder?,expectedRevision?}` → `{ok,team}` |
 | POST `/api/admin/invitations` | 管理员 | `{role:"judge"\|"audience",name}` → `{id,name,code}`，只有创建响应返回明文码 |
 | POST `/api/admin/revoke` | 管理员 | `{role:"judge"\|"audience",id}` → `{ok}` |
 | GET `/api/admin/export` | 管理员 | UTF-8 BOM CSV 下载，包含队伍、单份评分与反馈；防止表格公式注入 |
@@ -125,6 +125,53 @@ Nginx 应将 `/gotc/` **保留完整路径**代理到 `http://127.0.0.1:5274`，
 评审请求明确包含 `scores:null`；任何非空分数（包括空数组）返回 409，因为数值评分未实现。status 只接受 `draft`、`submitted`、`recused`。反馈最多 2000 字，正式定性记录必填，草稿可留空。记录形状为 `{teamId,version,draft,submitted,recused,updatedAt,hasUnsubmittedChanges}`；draft 为 `{feedback}`，submitted 为 `{feedback,submittedAt}`。每次成功写入 version 加一；草稿保留最近正式内容，回避保留内容并从完成计数中排除，后续保存草稿或正式记录解除回避。旧轮次或旧版本请求返回 409，不静默覆盖。
 
 身份、授权、轮次、窗口与记录版本均在同一 SQLite 写事务中核对。新数据使用独立的 `judging_*` 表和阶段标识，不修改原 `scores` 数据。审计记录操作、轮次、版本和管理员重置理由，不复制评审反馈正文。公开 `publication.status` 始终为 `unavailable` 并附阻断原因；配置规则或自动发布的通用规则引擎不在此框架中实现。
+
+## 后台数据 API
+
+以下接口仅管理员可用。所有写入沿用同一 SQLite 事务，获得写锁后才校验会话。仅 `/api/admin/data/` 下的 GET 允许查询参数；未知、重复或过长参数返回 400。
+
+| 方法与路径 | 请求或查询 | 响应 |
+|---|---|---|
+| GET `/api/admin/data/template` | `kind=teams\|judges` | UTF-8 BOM CSV 模板 |
+| POST `/api/admin/data/import/preview` | `{kind:"teams"\|"judges",csv}` | `{previewId,kind,rows,counts,canCommit,expiresAt}` |
+| POST `/api/admin/data/import/commit` | `{previewId}` | `{ok,kind,created,updated,unchanged,issuedCredentials}` |
+| POST `/api/admin/credentials` | `{role:"judge"\|"audience",id,action:"rotate"\|"revoke"}` | `{ok,id,active,credentialMode,code?}` |
+| GET `/api/admin/data/runs` | `stage=exhibition\|roadshow` | `{runs:[{id,stage,createdAt,frozenAt,reason,current}]}` |
+| GET `/api/admin/data/reviews` | `stage,runId,teamId,judgeId,track,status` 均可选 | `{run,teams,judges,reviews,coverage}` |
+| GET `/api/admin/data/review-history` | `runId,teamId,judgeId` 必填 | `{history,historyAvailableFrom}` |
+| POST `/api/admin/data/review-validity` | `{runId,teamId,judgeId,expectedVersion,invalidated,reason}` | `{ok,review}` |
+| GET `/api/admin/data/export` | `kind=teams\|judges\|reviews\|rosters\|audit` 及对应筛选 | UTF-8 BOM CSV |
+| GET `/api/admin/data/audit` | `action,actorId,target,beforeId,limit` 可选 | `{entries,nextBeforeId}` |
+
+名录 `team` 增加 `status`（`active|withdrawn|disqualified`）、`statusReason`、`booth`、`roadshowOrder`（1–9999 或 null）、`revision` 和 `trackKnown`。退出或取消资格须填写原因。更新带 `expectedRevision` 时，旧版本返回 409；队伍正式提交改变公开作品名也会增加名录版本。赛道选项为 AI for Science、城市与社区问题、未来学习样态；升级前未知赛道原样保留并标注，不能自动归类。状态、展位和路演顺序不改历史快照，不自动选队或排程。
+
+CSV 队伍列为 `number,name,project,track`，另可含 `status,statusReason,booth,roadshowOrder`；number/name 必填，按 number 匹配。评委列 `id,name`，空 id 为新建，非空 id 必须匹配已有评委，不按同名更新。缺失、重复或未知表头会返回第 1 行的错误预览；数据行的重复键、列数、类型和长度错误逐行列出。最多 500 数据行，CSV 本体最多 256 KiB。专用预览端点允许 2 MiB JSON 封装，以容纳合法转义；其余端点上限不变。
+
+预览行 `{row,action,key,before,after,errors}`，action 为 `create|update|unchanged|error`；counts 使用同名四个键。预览保存于私有数据库，绑定原管理员会话，15 分钟过期，既不创建实体也不生成凭据。确认时比较所有目标前值，任一变化则整批 409；有错误预览不能提交，成功后只能消费一次。`issuedCredentials` 只在成功响应返回明文，不进预览、审计或导出。导入评委不自动授权任何评审阶段。
+
+记录查询默认展示当前轮。指定 runId 须属于所选 stage；teams 来自该轮冻结快照。status 可为 `all|draft|submitted|recused|invalidated|missing`：draft 包括正式后的未提交修改，submitted 只含未回避且未作废的正式记录，missing 是名单×授权中没有有效正式记录的组合。无记录组合返回 version=0、空草稿/正式内容。coverage 为 `{expected,recorded,validSubmitted,missing}`，按队伍/评委/赛道筛选统计，不代表达到计分门槛。组合超过 10000 条须缩小筛选。
+
+作废或恢复只允许当前轮，原因必填，递增记录版本但不改评语。作废记录不计公开数量，评委后续修改仍保留作废，须管理员明确恢复。旧轮只读。私有 history 保存每次修改的前后内容、版本、操作者与原因；首次升级仅保存已知当前基线，不伪造过去版本，`historyAvailableFrom` 标明开始记录的时间。通用 audit 保存名录、窗口、授权、导入、凭据和有效性变更前后状态，不复制评语全文或明文凭据。
+
+分类 CSV 沿用当前筛选，包含阶段/轮次/版本/状态；定性记录写“未计分”，不填 0 分；rosters 写 `manual_worklist`，不叫晋级名单。审计页面每次读取 1–100 条，默认 50，使用 nextBeforeId 继续；审计 CSV 导出全部匹配记录。所有 CSV 处理引号、换行与表格公式注入，空结果仍有表头。材料继续用原提交 CSV，旧分数导出仍是独立旧版接口。
+
+观众投票现使用独立 `votingOpen` 和 `votingDeadline`。首次升级只把旧 scoringOpen 的当前值复制一次，此后旧评分开关与投票互不联动。`GET /api/audience` 的 votingOpen 是当前可投状态，另含 votingDeadline 与 `{open,deadline,canEdit,serverTime}` window；服务器在写锁后执行严格截止检查。作品提交、展示、路演和观众四窗口独立。
+
+## 私有备份与恢复
+
+首次升级后台数据结构前，服务会在私有数据目录生成 `before-admin-data-*.sqlite3`。日常备份可在服务运行时用 SQLite backup API 获取一致副本：
+
+```sh
+python3 -B scripts/backup_event.py backup /private/event.sqlite3 /private/backups/event-copy.sqlite3
+```
+
+恢复时先停止目标服务，恢复到一个不存在的新目标，再把服务的数据目录指向该恢复目录；脚本拒绝覆盖已有文件：
+
+```sh
+python3 -B scripts/backup_event.py restore /private/backups/event-copy.sqlite3 /private/restored/event.sqlite3
+```
+
+脚本校验完整性和外键，文件权限为 0600。数据库包含账号哈希、会话、队伍、材料、轮次、授权、反馈历史与审计；数据目录中的统一码配置、管理码文件须另行保存在私有备份中，不进入仓库或公开下载。不要只复制运行中的主 SQLite 文件而遗漏 WAL。
 
 ## 旧版评分语义（兼容接口）
 

@@ -47,6 +47,7 @@ test('review state separates saved drafts, formal records, later drafts and recu
   assert.match(h.reviewState({submitted:{feedback:'Formal'}}),/已正式提交.*未计分/);
   assert.match(h.reviewState({submitted:{feedback:'Formal'},hasUnsubmittedChanges:true}),/有草稿修改/);
   assert.equal(h.reviewState({submitted:{feedback:'Formal'},recused:true}),'已回避');
+  assert.equal(h.reviewState({submitted:{feedback:'Formal'},recused:true,invalidated:true}),'已作废');
 });
 
 test('material view uses the captured formal snapshot and numeric placeholders remain explicit',()=>{
@@ -125,4 +126,27 @@ test('switching teams while a conflict recovery refreshes preserves the new edit
   assert.equal(main.innerHTML,'TEAM_B_UNSAVED_AFTER_CONFLICT');
   assert.equal(vm.runInContext('reviewDirty',context),true);
   assert.equal(vm.runInContext('selectedTeam',context),'T2');
+});
+
+test('judge rendering excludes invalidated formal records from its count and keeps the reason and original feedback visible',async()=>{
+  const main={innerHTML:''},editor={innerHTML:''},picker={innerHTML:''};
+  const form={isConnected:true,addEventListener(){}};
+  const elements={'platform-main':main,'judge-editor':editor,'team-picker':picker,'review-form':form,
+    'save-review-draft':{},'recuse-review':{}};
+  const record={teamId:'T1',version:3,invalidated:true,invalidatedReason:'<img src=x> Documented correction',
+    submitted:{feedback:'ORIGINAL_FORMAL_RETAINED',submittedAt:1},draft:{feedback:'Original saved input'}};
+  const data={stage,teams:[team(1)],myReviews:[record],window:{canEdit:false,deadline:null}};
+  const context=vm.createContext({document:{getElementById:id=>elements[id],querySelectorAll:()=>[]},
+    location:{href:'https://example.test/platform.html#judge'},URL,TextEncoder,Intl,Date,setTimeout,clearTimeout,
+    fetch:async()=>({ok:true,json:async()=>data})});
+  vm.runInContext(source+"\nroute='judge';routeVersion=1;",context);
+  await vm.runInContext('renderJudge(1)',context);
+  assert.match(main.innerHTML,/已正式提交 0 份评审记录/);
+  assert.match(editor.innerHTML,/组织方已作废此记录/);
+  assert.match(editor.innerHTML,/继续修改仍会保留作废状态/);
+  assert.match(editor.innerHTML,/&lt;img src=x&gt; Documented correction/);
+  assert.ok(!editor.innerHTML.includes('<img src=x>'));
+  assert.match(editor.innerHTML,/ORIGINAL_FORMAL_RETAINED/);
+  assert.match(picker.innerHTML,/已作废/);
+  assert.ok(!picker.innerHTML.includes('saved-status'));
 });
