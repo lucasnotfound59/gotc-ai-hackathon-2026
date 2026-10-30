@@ -1,0 +1,8 @@
+{
+  "repository": "simonchenjh98/gotc-ai-hackathon-2026",
+  "commit": "e456bd3f463f994450065d03cd3337798d1b6bd4",
+  "path": "server/app.py",
+  "git_blob": "ef3d17d12163b4643c2c2c9a6fa2d075acca390c",
+  "sha256": "f9a85aec30342e95ae4e93d238242c4f5986e1eb1d15014889bfc5825e6e49a5",
+  "note": "Exact historical application bytes used only by isolated migration and code/database rollback tests. Do not edit or deploy this fixture. No test credentials are embedded."
+}

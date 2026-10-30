@@ -5,7 +5,7 @@ import vm from 'node:vm';
 
 const source=fs.readFileSync(new URL('../platform.js',import.meta.url),'utf8').split("window.addEventListener('hashchange'")[0];
 const context=vm.createContext({document:{getElementById:()=>({})},location:{href:'https://example.test/gotc/platform.html#team'},URL,TextEncoder,Intl,Date,setTimeout,clearTimeout});
-vm.runInContext(source+'\nglobalThis.helpers={submissionState,safeMaterialUrl,materialMarkup,judgeSubmissionMarkup,teamFormMarkup,beijingInput,parseBeijingInput,beijingTime};',context);
+vm.runInContext(source+'\nglobalThis.helpers={submissionState,safeMaterialUrl,materialMarkup,judgeSubmissionMarkup,teamFormMarkup,windowMarkup,beijingInput,parseBeijingInput,beijingTime};',context);
 const h=context.helpers;
 
 test('submission states distinguish empty, draft and changes after formal submission',()=>{
@@ -58,4 +58,16 @@ test('Beijing datetime conversion is independent of browser timezone and handles
   assert.equal(h.parseBeijingInput('2026-11-08T14:30'),deadline);
   assert.throws(()=>h.parseBeijingInput('2026-02-30T14:30'));
   assert.throws(()=>h.parseBeijingInput('invalid'));
+});
+
+
+test('submission notice explains save-time checks and mutable external content',()=>{
+  const html=h.windowMarkup({canEdit:true,submissionDeadline:null});
+  assert.match(html,/实际保存前检查提交窗口和材料版本/);
+  assert.match(html,/点击提交不代表已保存/);
+  assert.match(html,/只保存填写的内容和链接/);
+  assert.match(html,/不会抓取或检查外链内容/);
+  assert.match(html,/文件之后仍可能变化/);
+  assert.ok(!html.includes('服务器接收时'));
+  assert.match(h.windowMarkup({canEdit:false,submissionDeadline:0}),/当前作品提交只读/);
 });

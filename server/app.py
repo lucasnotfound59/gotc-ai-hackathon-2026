@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import csv
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import hashlib
 import hmac
 import io
@@ -201,7 +201,7 @@ class EventService:
             if not table or "'team'" in table[0]:
                 return
             backup_path=self.data_dir/("before-team-"+str(now_ms())+"-"+secrets.token_hex(4)+".sqlite3")
-            with sqlite3.connect(backup_path) as backup:
+            with closing(sqlite3.connect(backup_path)) as backup:
                 db.backup(backup)
             os.chmod(backup_path, 0o600)
             db.execute("PRAGMA foreign_keys=OFF")

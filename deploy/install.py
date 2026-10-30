@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -217,7 +218,7 @@ def main():
     if old_unit:
         (backup / 'gotc-hackathon.service').write_text(old_unit)
     if (data / 'event.sqlite3').is_file():
-        with sqlite3.connect(data / 'event.sqlite3') as source, sqlite3.connect(backup / 'event.sqlite3') as target:
+        with closing(sqlite3.connect(data / 'event.sqlite3')) as source, closing(sqlite3.connect(backup / 'event.sqlite3')) as target:
             source.backup(target)
         os.chmod(backup / 'event.sqlite3', 0o600)
     release = ROOT / 'releases' / args.release
