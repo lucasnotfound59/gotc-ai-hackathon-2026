@@ -147,7 +147,12 @@ function installImportTools(ctx,{alive,next,fresh,refreshDirectory,track}){
   let prepared=null;
   const invalidate=()=>{prepared=null;const button=document.getElementById('commit-import');if(button)button.disabled=true;};
   form.addEventListener('input',invalidate);
-  form.elements.kind.onchange=()=>{invalidate();const link=document.getElementById('import-template');link.href=`api/admin/data/template?kind=${form.elements.kind.value}`;link.textContent=form.elements.kind.value==='teams'?'下载队伍模板':'下载评委模板';};
+  form.elements.kind.onchange=()=>{
+    invalidate();const link=document.getElementById('import-template'),judges=form.elements.kind.value==='judges';
+    // Choose fixed destinations rather than interpolating DOM input into a URL.
+    link.href=judges?'api/admin/data/template?kind=judges':'api/admin/data/template?kind=teams';
+    link.textContent=judges?'下载评委模板':'下载队伍模板';
+  };
   form.elements.file.onchange=async()=>{
     invalidate();const file=form.elements.file.files[0];if(!file)return;
     if(file.size>262144){formError(form,'CSV 文件不能超过 256 KiB。');return;}

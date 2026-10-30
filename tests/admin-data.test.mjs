@@ -52,6 +52,22 @@ function importHarness(fetch){
 }
 const preview=id=>({previewId:id,counts:{create:1,update:0,unchanged:0,error:0},rows:[],canCommit:true,expiresAt:1});
 
+test('import template links only use fixed team or judge destinations',()=>{
+  const h=importHarness(async()=>ok({}));
+  for(const [kind,expectedKind,label] of [
+    ['teams','teams','下载队伍模板'],
+    ['judges','judges','下载评委模板'],
+    ['teams&kind=judges','teams','下载队伍模板'],
+    ['"><img src=x onerror=alert(1)>','teams','下载队伍模板'],
+    ['javascript:alert(1)','teams','下载队伍模板'],
+  ]){
+    h.form.elements.kind.value=kind;
+    h.form.elements.kind.onchange();
+    assert.equal(h.elements['import-template'].href,`api/admin/data/template?kind=${expectedKind}`);
+    assert.equal(h.elements['import-template'].textContent,label);
+  }
+});
+
 test('editing CSV during preview keeps the new input and rejects the late preview',async()=>{
   const response=deferred(),requests=[];
   const h=importHarness(async(url,options)=>{requests.push({path:url.pathname,body:JSON.parse(options.body)});return response.promise;});
