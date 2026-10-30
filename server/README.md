@@ -103,6 +103,8 @@ Nginx 应将 `/gotc/` **保留完整路径**代理到 `http://127.0.0.1:5274`，
 
 旧版数据库会先经 SQLite backup API 备份到私有数据目录的 `before-team-*.sqlite3`，再事务重建 `accounts` 的角色约束；保留账号 ID、密码哈希、会话、评分、投票、队伍和审计，通过外键检查后提交，失败回滚并停止启动。重复启动跳过已完成迁移。升级前仍建议进行常规备份，保留整个持久化目录；备份不会被静态服务公开。
 
+完整的保存/冲突处理、URL 字段快照边界、部署检查及三类回退步骤见 [作品提交上线与回退说明](../docs/submission-release.md)。作品提交模块保留最新草稿与最近正式字段，不归档外链内容；独立评审轮次的冻结能力见下文。保存是否成功以服务端锁后校验与成功响应为准，不能以点击时间判断；409 需要读取最新版本并由用户明确合并，不自动重试。
+
 ## 展示与路演评审框架
 
 新记录入口 `#judge-exhibition`、`#judge-roadshow` 使用 `/api/judging/{stage}`，stage 允许 `exhibition`（展示）或 `roadshow`（路演），未知阶段返回 404；相应进度页为 `#board-exhibition`、`#board-roadshow`。它保存定性评审记录，**仅这些新阶段的数值评分、满分、有效评委门槛、汇总公式、排名、晋级名额和成绩发布尚未实现**：相应字段为 `null`，能力标记为 false，不生成成绩或晋级结果。六个维度名称仅作为后续量表的占位，`max` 全为 null。
@@ -205,7 +207,7 @@ python3 -B scripts/backup_event.py restore /private/backups/event-copy.sqlite3 /
 
 生产仅 loopback + Nginx。静态根目录为项目根，但只允许 `index.html`、`styles.css`、`app.js`、`platform.html`、`platform.js`、`platform.css`、`favicon.svg`、`assets/` 中的图片/字体、`downloads/` 中的 txt/ics。服务拒绝隐藏文件、路径穿越、越界符号链接和目录列表；不会公开 `server/`、文档、数据库或凭据。
 
-接口禁止跨域写入，JSON 上限为提交材料端点 32KB、其余端点 16KB，登录按真实来源 IP/身份限速为每分钟 20 次，另有每身份每分钟 400 次全局上限。Nginx 必须覆盖可信代理 IP 头。CSP 仅允许本站脚本、样式、字体和请求，不允许内联脚本、外部框架或嵌入页面。所有响应禁用缓存。
+接口禁止跨域写入，JSON 上限为 CSV 导入预览端点 2 MiB、提交材料端点 32KB、其余端点 16KB，登录按真实来源 IP/身份限速为每分钟 20 次，另有每身份每分钟 400 次全局上限。Nginx 对导入预览路径单独放行 2 MiB，其余 `/gotc/` 请求保持 32KB，应用端点限额仍然强制执行。Nginx 必须覆盖可信代理 IP 头。CSP 仅允许本站脚本、样式、字体和请求，不允许内联脚本、外部框架或嵌入页面。所有响应禁用缓存。
 
 ## 验证
 
@@ -213,6 +215,7 @@ python3 -B scripts/backup_event.py restore /private/backups/event-copy.sqlite3 /
 
 ```sh
 python3 -B -m unittest discover -s server -p 'test_*.py' -v
+python3 -B -m unittest discover -s deploy -p 'test_*.py' -v
 python3 -m py_compile server/app.py server/test_api.py
 ```
 

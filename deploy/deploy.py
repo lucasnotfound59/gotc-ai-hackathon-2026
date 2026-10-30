@@ -59,6 +59,33 @@ def run_remote(client, command):
     return output
 
 
+def private_runtime_directory():
+    runtime = PROJECT / '.runtime'
+    if runtime.is_symlink() or (runtime.exists() and not runtime.is_dir()):
+        raise RuntimeError('The private runtime path must be a real directory')
+    runtime.mkdir(exist_ok=True, mode=0o700)
+    # An existing directory may have been created with a wider process umask.
+    os.chmod(runtime, 0o700)
+    return runtime
+
+
+def receive_admin_access(sftp, runtime):
+    private_file = runtime / 'admin-access.txt'
+    temporary = runtime / 'admin-access.txt.pending'
+    if temporary.exists() or temporary.is_symlink() or private_file.is_symlink():
+        raise RuntimeError('Unexpected local admin-access path; deployment succeeded but private retrieval needs review')
+    with sftp.open(REMOTE_ROOT + '/data/admin-access.txt', 'rb') as source:
+        # Restrict permissions at creation, before the first credential byte is written.
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'wb') as output:
+            while True:
+                block = source.read(8192)
+                if not block:
+                    break
+                output.write(block)
+    os.replace(temporary, private_file)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--execute', action='store_true', help='Perform the remote deployment (default only packages locally)')
@@ -81,8 +108,7 @@ def main():
     if not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', source_sha):
         raise RuntimeError('source-sha must be a 40 or 64 character lowercase hexadecimal digest')
     release = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + source_sha[:12] + '-' + uuid.uuid4().hex[:8]
-    runtime = PROJECT / '.runtime'
-    runtime.mkdir(exist_ok=True, mode=0o700)
+    runtime = private_runtime_directory()
     archive = runtime / ('release-' + release + '.tar.gz')
     with tarfile.open(archive, 'w:gz') as package:
         for name, data in blobs:
@@ -132,20 +158,8 @@ os.chmod(q,0o700)
                    '--release', release, '--source-sha', source_sha]
         result = json.loads(run_remote(client, shlex.join(command)).strip())
         # This code is not an output artifact and must remain outside Git.
-        private_file = runtime / 'admin-access.txt'
-        temporary = runtime / 'admin-access.txt.pending'
-        if temporary.exists() or temporary.is_symlink() or private_file.is_symlink():
-            raise RuntimeError('Unexpected local admin-access path; deployment succeeded but private retrieval needs review')
         with client.open_sftp() as sftp:
-            with sftp.open(REMOTE_ROOT + '/data/admin-access.txt', 'rb') as source:
-                with temporary.open('xb') as output:
-                    while True:
-                        block = source.read(8192)
-                        if not block:
-                            break
-                        output.write(block)
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, private_file)
+            receive_admin_access(sftp, runtime)
         manifest.update(result)
         manifest['executed'] = True
         manifest_path.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
