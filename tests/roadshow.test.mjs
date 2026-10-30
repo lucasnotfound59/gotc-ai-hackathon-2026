@@ -19,9 +19,9 @@ function editorHarness(fetch){
   const elements={'platform-main':main,'judge-editor':{innerHTML:''},'review-form':form,'save-review-draft':draft,
     'recuse-review':{},'review-conflict':{innerHTML:''},'reload-review':reload,
     'platform-toast':{textContent:'',classList:{add(){},remove(){}}}};
-  const context=vm.createContext({document:{getElementById:id=>elements[id]},location:{href:'https://example.test/platform.html#judge'},
+  const context=vm.createContext({document:{getElementById:id=>elements[id]},location:{href:'https://example.test/platform.html#judge-exhibition'},
     URL,TextEncoder,Intl,Date,setTimeout:()=>0,clearTimeout,confirm:()=>true,fetch});
-  vm.runInContext(source+`\nroute='judge';routeVersion=1;selectedTeam='T1';judgeData=${JSON.stringify(data('exhibition'))};renderJudgeEditor();renderTeamPicker=()=>{};renderJudgeEditor=()=>{};`,context);
+  vm.runInContext(source+`\nroute='judge-exhibition';routeVersion=1;selectedTeam='T1';judgeData=${JSON.stringify(data('exhibition'))};renderExhibitionJudgeEditor();renderExhibitionTeamPicker=()=>{};renderExhibitionJudgeEditor=()=>{};`,context);
   const switchStage=()=>{
     form.isConnected=false;
     main.innerHTML='ROADSHOW_INPUT_MUST_SURVIVE';
@@ -35,14 +35,14 @@ test('real stage reads keep separate selected teams and explain the manual roads
   const context=vm.createContext({document:{getElementById:()=>main},location:{href:'https://example.test/platform.html'},
     URL,TextEncoder,Intl,Date,setTimeout,clearTimeout,
     fetch:async url=>{urls.push(url.pathname);return response(data(url.pathname.includes('roadshow')?'roadshow':'exhibition'));}});
-  vm.runInContext(source+"\nrenderTeamPicker=()=>{};renderJudgeEditor=()=>{};route='judge-roadshow';routeVersion=1;selectedTeams.exhibition='T2';selectedTeams.roadshow='T1';",context);
-  await vm.runInContext("renderJudge(1)",context);
+  vm.runInContext(source+"\nrenderExhibitionTeamPicker=()=>{};renderExhibitionJudgeEditor=()=>{};route='judge-roadshow';routeVersion=1;selectedTeams.exhibition='T2';selectedTeams.roadshow='T1';",context);
+  await vm.runInContext("renderExhibitionJudge(1)",context);
   assert.match(main.innerHTML,/组织方人工工作名单/);
   assert.match(main.innerHTML,/晋级算法尚未实现/);
   assert.match(main.innerHTML,/不代表正式晋级/);
   assert.equal(vm.runInContext('selectedTeam',context),'T1');
-  vm.runInContext("route='judge';routeVersion=2;",context);
-  await vm.runInContext('renderJudge(2)',context);
+  vm.runInContext("route='judge-exhibition';routeVersion=2;",context);
+  await vm.runInContext('renderExhibitionJudge(2)',context);
   assert.equal(vm.runInContext('selectedTeam',context),'T2');
   assert.equal(vm.runInContext('selectedTeams.roadshow',context),'T1');
   assert.deepEqual(urls,['/api/judging/roadshow','/api/judging/exhibition']);
@@ -119,7 +119,7 @@ test('admin save refresh preserves a stage form edited while its GET was pending
 test('manual admin refresh preserves a roadshow input entered while both reads were pending',async()=>{
   const pending=deferred(),bothStarted=deferred(),listeners={},elements={};
   let slow=false,reads=0;
-  const main={innerHTML:'',querySelectorAll:()=>[]};
+  const main={innerHTML:'',querySelectorAll:()=>[],insertAdjacentHTML(_position,html){this.innerHTML+=html;}};
   const container={isConnected:true};
   const stageForm={isConnected:true,closest:()=>container,addEventListener:(event,listener)=>{listeners[event]=listener;}};
   const eventData={config:{},teams:[],judges:[],audience:[]};

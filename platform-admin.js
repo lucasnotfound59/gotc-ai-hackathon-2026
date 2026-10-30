@@ -48,6 +48,8 @@ function installAdminData(data,version){
   const formFrom=id=>document.getElementById(id);
 
   root.insertAdjacentHTML('afterbegin',`<nav class="admin-subnav" aria-label="后台区域">
+    <button type="button" data-admin-jump="settings-form">专业评分与发布</button>
+    <button type="button" data-admin-jump="audience-settings">观众投票</button>
     <button type="button" data-admin-jump="judging-admin">评审窗口与名单</button>
     <button type="button" data-admin-jump="team-form">队伍名录</button>
     <button type="button" data-admin-jump="admin-import">CSV 导入</button>
@@ -56,7 +58,7 @@ function installAdminData(data,version){
     <button type="button" data-admin-jump="admin-records">历史与记录</button>
     <button type="button" data-admin-jump="admin-audit">操作记录</button>
   </nav>`);
-  root.insertAdjacentHTML('beforeend',adminImportMarkup()+adminRecordsMarkup()+adminAuditMarkup()+`<section class="surface admin-unavailable"><h2>尚未实现的功能</h2><p class="small-note">数值评分、汇总算法、晋级与综合排名、奖项及 GOTC 资格、正式成绩发布尚未实现。当前只保存工作名单、材料和定性评审记录。</p><button class="btn secondary small" disabled>配置计分与汇总</button> <button class="btn secondary small" disabled>发布正式结果</button></section>`);
+  root.insertAdjacentHTML('beforeend',adminImportMarkup()+adminRecordsMarkup()+adminAuditMarkup()+`<section class="surface admin-unavailable"><h2>新阶段待配置功能</h2><p class="small-note">展示和路演阶段的数值评分、汇总算法、晋级与综合排名、奖项及 GOTC 资格、正式成绩发布尚未实现。这两个阶段当前只保存工作名单、材料和定性评审记录。现有六维专业评分与成绩发布可在上方使用。</p><button class="btn secondary small" disabled>配置阶段计分与汇总</button> <button class="btn secondary small" disabled>发布阶段结果</button></section>`);
   document.querySelectorAll('[data-admin-jump]').forEach(button=>button.onclick=()=>document.getElementById(button.dataset.adminJump)?.scrollIntoView({behavior:'smooth',block:'start'}));
 
   async function refreshDirectory(){
@@ -122,10 +124,10 @@ function installAdminData(data,version){
   }
   renderCredentials();
   const invite=formFrom('invite-form');
-  invite.onsubmit=event=>{event.preventDefault();const payload={role:invite.elements.role.value,name:invite.elements.name.value.trim()};adminSaveForm(invite,'admin/invitations',payload,async(result,unchanged)=>{adminCodeOutput(formFrom('new-code'),[{name:result.name || payload.name,code:result.code}]);if(unchanged)invite.elements.name.value='';await refreshDirectory();toast('身份已创建。评委需另行加入各阶段工作名单。');});};
+  invite.onsubmit=event=>{event.preventDefault();const payload={role:invite.elements.role.value,name:invite.elements.name.value.trim()};adminSaveForm(invite,'admin/invitations',payload,async(result,unchanged)=>{adminCodeOutput(formFrom('new-code'),[{name:result.name || payload.name,code:result.code}]);if(unchanged)invite.elements.name.value='';await refreshDirectory();toast('身份已创建。专业评分可直接使用；参与展示或路演评审记录时，需加入对应阶段工作名单。');});};
 
   const voting=formFrom('audience-settings');
-  voting.innerHTML=`<h3>观众投票窗口</h3><label class="toggle-line"><input type="checkbox" name="votingOpen" ${data.config.votingOpen?'checked':''}>开放观众投票</label><label class="field">截止时间（北京时间）<input name="votingDeadline" type="datetime-local" value="${esc(beijingInput(data.config.votingDeadline))}"><small>留空表示不设截止。此窗口独立于作品提交、展示和路演评审。</small></label><button class="btn small" type="submit">保存投票窗口</button><p class="form-error" role="alert"></p>`;
+  voting.innerHTML=`<h3>观众投票窗口</h3><label class="toggle-line"><input type="checkbox" name="votingOpen" ${data.config.votingOpen?'checked':''}>开放观众投票</label><label class="field">截止时间（北京时间）<input name="votingDeadline" type="datetime-local" value="${esc(beijingInput(data.config.votingDeadline))}"><small>留空表示不设截止。此窗口独立于专业评分、作品提交、展示和路演评审。</small></label><button class="btn small" type="submit">保存投票窗口</button><p class="form-error" role="alert"></p>`;
   voting.onsubmit=event=>{event.preventDefault();try{adminSaveForm(voting,'admin/settings',{votingOpen:voting.elements.votingOpen.checked,votingDeadline:parseBeijingInput(voting.elements.votingDeadline.value)},()=>toast('观众投票窗口已保存。'));}catch(error){formError(voting,error.message);}};
   const submissions=formFrom('submission-settings');
   submissions.onsubmit=event=>{event.preventDefault();try{adminSaveForm(submissions,'admin/settings',{submissionsOpen:submissions.elements.submissionsOpen.checked,submissionDeadline:parseBeijingInput(submissions.elements.submissionDeadline.value)},()=>toast('作品提交窗口已保存。'));}catch(error){formError(submissions,error.message);}};
@@ -211,7 +213,7 @@ function installRecordTools(ctx,{alive,next,fresh,track}){
         const team=result.teams.find(item=>item.id===record.teamId),judge=result.judges.find(item=>item.id===record.judgeId);
         return `<tr><td>${esc(team?teamLabel(team):record.teamId)}<br><small>${esc(team?.track || '')}</small></td><td>${esc(judge?.name || record.judgeId)}</td><td>${esc(adminRecordStatus(record))}<br><small>版本 ${Number(record.version)} · 未计分</small>${record.invalidatedReason?`<p class="small-note">原因：${esc(record.invalidatedReason)}</p>`:''}</td><td><details><summary>查看草稿与正式内容</summary>${record.submitted?`<h4>正式记录</h4><p class="preserve-text">${esc(record.submitted.feedback)}</p><small>${esc(beijingTime(record.submitted.submittedAt))}</small>`:'<p class="small-note">暂无正式记录。</p>'}${record.draft?`<h4>草稿</h4><p class="preserve-text">${esc(record.draft.feedback || '（空草稿）')}</p>`:''}</details>${record.version?`<button class="btn secondary small" type="button" data-record-history="${index}">查看修订历史</button><div data-history-output="${index}" class="record-history"></div>${run.current?`<details><summary>${record.invalidated?'恢复这份记录':'作废这份记录'}</summary><form data-validity="${index}"><label class="field">${record.invalidated?'恢复':'作废'}原因<input name="reason" required maxlength="500"></label><button class="btn ${record.invalidated?'secondary':'danger'} small" type="submit">${record.invalidated?'恢复记录':'作废记录'}</button><p class="form-error" role="alert"></p></form></details>`:''}`:''}</td></tr>`;
       }).join('') || '<tr><td colspan="4">没有符合筛选条件的记录。</td></tr>'}</tbody></table></div><details class="stage-material"><summary>查看本轮冻结队伍与材料</summary>${result.teams.map(team=>`<details class="stage-material"><summary>${esc(teamLabel(team))} · ${esc(team.track || '未填写赛道')}</summary>${reviewMaterialMarkup(team.materialSnapshot)}</details>`).join('') || '<p class="small-note">本轮没有队伍。</p>'}</details>`;
-      document.getElementById('record-exports').innerHTML=[['teams','队伍名录'],['judges','评委名录'],['reviews','当前筛选记录'],['rosters','人工工作名单']].map(([kind,label])=>`<a class="btn secondary small" download href="api/${esc(adminQuery('admin/data/export',{kind,...ctx.reviewQuery}))}">导出${label} CSV</a>`).join('')+'<a class="btn secondary small" download href="api/admin/submissions/export">导出作品材料 CSV</a><a class="btn secondary small" download href="api/admin/export">导出旧版评分 CSV</a>';
+      document.getElementById('record-exports').innerHTML=[['teams','队伍名录'],['judges','评委名录'],['reviews','当前筛选记录'],['rosters','人工工作名单']].map(([kind,label])=>`<a class="btn secondary small" download href="api/${esc(adminQuery('admin/data/export',{kind,...ctx.reviewQuery}))}">导出${label} CSV</a>`).join('')+'<a class="btn secondary small" download href="api/admin/submissions/export">导出作品材料 CSV</a><a class="btn secondary small" download href="api/admin/export">导出专业评分 CSV</a>';
       results.querySelectorAll('[data-record-history]').forEach(button=>button.onclick=()=>withBusy(button,async()=>{
         const record=result.reviews[Number(button.dataset.recordHistory)],output=results.querySelector(`[data-history-output="${button.dataset.recordHistory}"]`),request=next('history-'+button.dataset.recordHistory);
         try{

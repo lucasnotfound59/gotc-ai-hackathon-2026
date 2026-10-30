@@ -213,7 +213,7 @@ function teamHarness(fetch,directoryOverrides={}){
       closest:()=>({querySelector:()=>({textContent:'Name '+match[2]})})}));
   },querySelectorAll:()=>credentialButtons};
   const elements={'team-form':entry,'clear-team':{},'invite-form':form({'role':'judge','name':''}),
-    'audience-settings':form(),'submission-settings':form(),
+    'audience-settings':form(),'settings-form':form({minJudges:'5'}),'submission-settings':form(),
     'admin-total-teams':{textContent:'2'},'admin-active-audience':{textContent:'0'},
     'new-code':{innerHTML:'',insertAdjacentHTML(_position,html){this.innerHTML+=html;},querySelectorAll:()=>[]}};
   const root={isConnected:true,insertAdjacentHTML(){},querySelectorAll:()=>[]};elements['platform-main']=root;
@@ -221,6 +221,8 @@ function teamHarness(fetch,directoryOverrides={}){
   const eventData={config:{votingOpen:false,votingDeadline:null},teams:[
     {id:'T1',number:1,name:'Stored A',track:'AI for Science',revision:7},
     {id:'T2',number:2,name:'Stored B',track:'AI for Science',revision:10}],judges:[],audience:[],trackOptions:['AI for Science'],...directoryOverrides};
+  elements['settings-form'].elements.scoringOpen={checked:true};elements['settings-form'].elements.resultsPublished={checked:true};elements['settings-form'].onsubmit=()=>{elements['settings-form'].originalHandlerCalled=true;};
+  elements['audience-settings'].elements={votingOpen:{checked:false},votingDeadline:{value:''}};
   const context=environment(elements,fetch,{eventData});
   context.document.querySelector=selector=>selector==='.admin-team-table'?table:list;
   vm.runInContext('installImportTools=()=>{};installRecordTools=()=>{};installAuditTools=()=>{};installAdminData(eventData,1);trackAdminForm(document.getElementById("team-form"));',context);
@@ -307,4 +309,17 @@ test('directory refresh updates team and active-audience summaries while preserv
   assert.equal(h.elements['admin-active-audience'].textContent,'2');
   assert.equal(h.elements['invite-form'].elements.name.value,'UNSAVED_INVITATION_INPUT');
   assert.equal(vm.runInContext('dirtyAdminForms.has(document.getElementById("invite-form"))',h.context),true);
+});
+
+
+test('admin tools retain professional settings and use an independent audience settings form',async()=>{
+  const requests=[];
+  const h=teamHarness(async(url,options)=>{requests.push({path:url.pathname,body:options.body?JSON.parse(options.body):null});return ok({ok:true});});
+  const professional=h.elements['settings-form'],audience=h.elements['audience-settings'];
+  assert.equal(professional.elements.minJudges.value,'5');assert.equal(professional.elements.scoringOpen.checked,true);assert.equal(professional.elements.resultsPublished.checked,true);
+  professional.onsubmit();assert.equal(professional.originalHandlerCalled,true,'The existing professional submit handler must survive admin extensions');
+  audience.elements.votingOpen.checked=true;audience.onsubmit({preventDefault(){}});await wait();
+  assert.deepEqual(requests,[{path:'/api/admin/settings',body:{votingOpen:true,votingDeadline:null}}]);
+  assert.equal(professional.elements.minJudges.value,'5');assert.equal(professional.elements.scoringOpen.checked,true);
+  assert.match(audience.innerHTML,/name="votingOpen"/);assert.match(audience.innerHTML,/name="votingDeadline"/);assert(!audience.innerHTML.includes('name="scoringOpen"'));
 });
