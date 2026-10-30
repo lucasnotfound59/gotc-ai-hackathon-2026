@@ -37,6 +37,8 @@ BODY_LIMIT = 16384
 SUBMISSION_BODY_LIMIT = 32768
 IMPORT_BODY_LIMIT = 2 * 1024 * 1024
 SESSION_SECONDS = 12 * 3600
+# Bound password-check CPU/memory without holding the database writer lock.
+LOGIN_KDF_CONCURRENCY = 4
 VOTE_LIMIT = 3
 COOKIE_NAME = "gotc_session"
 STATIC_FILES = {"index.html", "styles.css", "app.js", "platform.html", "platform.js", "platform-admin.js", "platform.css", "favicon.svg"}
@@ -147,6 +149,7 @@ class EventService:
         self.db_path = self.data_dir / "event.sqlite3"
         self.rate_lock = threading.Lock()
         self.login_attempts = defaultdict(deque)
+        self.login_kdf_slots = threading.BoundedSemaphore(LOGIN_KDF_CONCURRENCY)
         self.judging=JudgingService(clock=lambda:now_ms(),text=text_field,audit=self.audit,touch=self.touch,
             history=lambda *args,**kwargs:self.admin_data.record_review_change(*args,**kwargs),
             enrich_team=lambda db,team:self.admin_data.enrich_team(db,team))
@@ -337,8 +340,47 @@ class EventService:
         if actor["role"] != role:
             raise APIError(403, "当前身份无权访问")
 
+    def login(self, body, ip):
+        """Verify outside the writer lock, then recheck the proof before issuing a session."""
+        role = body.get("role")
+        if not isinstance(role, str) or role not in {"admin", "judge", "audience", "team"}:
+            raise APIError(400, "登录身份不正确")
+        self.rate_limit(ip, role)
+        code = text_field(body.get("code"), "邀请码", 160, True)
+        selector = body.get("accountId")
+        if selector is not None and (not isinstance(selector, str) or len(selector) > 80):
+            raise APIError(400, "登录身份不正确")
+        with self.db() as db:
+            shared_code = self.shared_login_codes.get(role)
+            if selector is None and shared_code and hmac.compare_digest(code.encode(), shared_code.encode()):
+                candidates = db.execute("SELECT id,name FROM accounts WHERE role=? AND active=1 AND id NOT IN (SELECT account_id FROM credential_overrides) ORDER BY created_at,id", (role,)).fetchall()
+                if len(candidates) > 1:
+                    return {"selectAccount": True, "accounts": [{"id": a["id"], "name": a["name"]} for a in candidates]}, None, None
+                if candidates:
+                    selector = candidates[0]["id"]
+            selector = selector or code.split(".", 1)[0]
+            account = db.execute("SELECT * FROM accounts WHERE id=? AND role=? AND active=1", (selector, role)).fetchone()
+        salt = account["salt"] if account else b"gotc-dummy-salt!"
+        # Waiting for a password-check slot must not reserve a SQLite write transaction.
+        with self.login_kdf_slots:
+            hashed = scrypt_hash(code, salt)
+        if not account or not hmac.compare_digest(hashed, account["code_hash"]):
+            raise APIError(401, "邀请码无效或已停用")
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute("SELECT * FROM accounts WHERE id=? AND role=? AND active=1", (account["id"], role)).fetchone()
+            if not current or not hmac.compare_digest(current["salt"], account["salt"]) or not hmac.compare_digest(current["code_hash"], account["code_hash"]):
+                raise APIError(401, "邀请码无效或已停用")
+            token = secrets.token_urlsafe(32)
+            db.execute("DELETE FROM sessions WHERE expires_at<=?", (now_ms(),))
+            db.execute("INSERT INTO sessions VALUES (?,?,?)", (hashlib.sha256(token.encode()).hexdigest(), current["id"], now_ms() + SESSION_SECONDS * 1000))
+            self.audit(db, current, "login")
+            return {"ok": True, "role": role, "name": current["name"]}, token, "set"
+
     def dispatch(self, method, path, body, cookie, ip, query=None):
         """Return (JSON object or CSV bytes, optional session token, cookie action)."""
+        if method == "POST" and path == "/api/login":
+            return self.login(body, ip)
         with self.db() as db:
             # Resolve write identities only after the lock: revocation may have committed while queued.
             if method=="POST":
@@ -358,33 +400,6 @@ class EventService:
             if method == "GET" and path == "/api/board":
                 config = self.config(db)
                 return {"teams": self.teams(db), "config": config, "updatedAt": config["updatedAt"], "serverTime": now_ms()}, None, None
-            if method == "POST" and path == "/api/login":
-                role = body.get("role")
-                if role not in {"admin", "judge", "audience", "team"}:
-                    raise APIError(400, "登录身份不正确")
-                self.rate_limit(ip, role)
-                code = text_field(body.get("code"), "邀请码", 160, True)
-                selector = body.get("accountId")
-                if selector is not None and (not isinstance(selector, str) or len(selector) > 80):
-                    raise APIError(400, "登录身份不正确")
-                shared_code = self.shared_login_codes.get(role)
-                if selector is None and shared_code and hmac.compare_digest(code.encode(), shared_code.encode()):
-                    candidates = db.execute("SELECT id,name FROM accounts WHERE role=? AND active=1 AND id NOT IN (SELECT account_id FROM credential_overrides) ORDER BY created_at,id", (role,)).fetchall()
-                    if len(candidates) > 1:
-                        return {"selectAccount": True, "accounts": [{"id": a["id"], "name": a["name"]} for a in candidates]}, None, None
-                    if candidates:
-                        selector = candidates[0]["id"]
-                selector = selector or code.split(".", 1)[0]
-                account = db.execute("SELECT * FROM accounts WHERE id=? AND role=? AND active=1", (selector, role)).fetchone()
-                salt = account["salt"] if account else b"gotc-dummy-salt!"
-                hashed = scrypt_hash(code, salt)
-                if not account or not hmac.compare_digest(hashed, account["code_hash"]):
-                    raise APIError(401, "邀请码无效或已停用")
-                token = secrets.token_urlsafe(32)
-                db.execute("DELETE FROM sessions WHERE expires_at<=?", (now_ms(),))
-                db.execute("INSERT INTO sessions VALUES (?,?,?)", (hashlib.sha256(token.encode()).hexdigest(), account["id"], now_ms() + SESSION_SECONDS * 1000))
-                self.audit(db, account, "login")
-                return {"ok": True, "role": role, "name": account["name"]}, token, "set"
             if method == "POST" and path == "/api/logout":
                 if actor:
                     try:

@@ -50,6 +50,10 @@ Nginx 应将 `/gotc/` **保留完整路径**代理到 `http://127.0.0.1:5274`，
 
 统一码匹配多位有效评委时，登录先返回 `{selectAccount:true,accounts:[{id,name}]}`，此时不会创建会话。选择身份后，用相同的 `role`、`code` 加 `accountId` 再次提交完成登录。身份选项只在验证了该角色的正确统一码后返回。
 
+登录密码校验在 SQLite 写锁之外进行，同一服务实例最多同时执行 4 次 scrypt，其他登录在锁外等候；这不是同时在线人数上限。scrypt 强度保持不变。校验完成后，服务取得写锁并重新检查账号角色、启用状态与被校验的凭据，再创建会话。校验期间停用、重发或更新统一码，会使旧凭据的这次登录失败。其他业务写入仍在取得写锁后检查会话、版本和截止时间。
+
+登录限流与上述并发上限独立：同一 IP、同一角色每分钟最多 20 次，每个角色全局每分钟最多 400 次；成功、失败及统一码选择身份的两个步骤都计数。同一校园网络出口可能共用 IP 配额，429 应作为限流单独排查，不解释为数据库容量不足。
+
 公开 `teams` 的每行结构：
 
 ```json
@@ -134,6 +138,7 @@ Nginx 应将 `/gotc/` **保留完整路径**代理到 `http://127.0.0.1:5274`，
 
 | 方法与路径 | 请求或查询 | 响应 |
 |---|---|---|
+| GET `/api/admin/data/sync` | 不接受查询参数 | `{reviewRevision,stages}`，只读的评审变化标记 |
 | GET `/api/admin/data/template` | `kind=teams\|judges` | UTF-8 BOM CSV 模板 |
 | POST `/api/admin/data/import/preview` | `{kind:"teams"\|"judges",csv}` | `{previewId,kind,rows,counts,canCommit,expiresAt}` |
 | POST `/api/admin/data/import/commit` | `{previewId}` | `{ok,kind,created,updated,unchanged,issuedCredentials}` |
@@ -144,6 +149,10 @@ Nginx 应将 `/gotc/` **保留完整路径**代理到 `http://127.0.0.1:5274`，
 | POST `/api/admin/data/review-validity` | `{runId,teamId,judgeId,expectedVersion,invalidated,reason}` | `{ok,review}` |
 | GET `/api/admin/data/export` | `kind=teams\|judges\|reviews\|rosters\|audit` 及对应筛选 | UTF-8 BOM CSV |
 | GET `/api/admin/data/audit` | `action,actorId,target,beforeId,limit` 可选 | `{entries,nextBeforeId}` |
+
+`sync` 只追踪独立展示/路演记录，不追踪原 `scores` 表的专业评分。它不返回评语、材料、名单或凭据，不写数据库或审计。`reviewRevision` 取私有评审修订表的最大 ID，无记录时为 0；同一毫秒内的多次修改仍会改变标记，普通登录不会改变它。`stages` 按 `exhibition`、`roadshow` 分别返回 `{runId,revision,canEdit}`；`canEdit` 使用同一次服务端时刻计算，到截止时间会变为 false，即使没有新的写入。
+
+后台页面可见时，每次检查结束后等待 3 秒再读取标记。新阶段评审记录发生变化且轮次、配置仍一致时，只更新该阶段的正式记录数量和只读记录表；页面隐藏时暂停。轮次或配置变更时提示刷新核对，截止时间到达时更新只读标识，保留未保存输入。原专业评分设置与统计、历史筛选、审计、名录、材料和一次性登录码区域不自动重绘，需要重新查询或手动刷新；原专业成绩看板仍通过 `/api/board` 定时刷新。
 
 名录 `team` 增加 `status`（`active|withdrawn|disqualified`）、`statusReason`、`booth`、`roadshowOrder`（1–9999 或 null）、`revision` 和 `trackKnown`。退出或取消资格须填写原因。更新带 `expectedRevision` 时，旧版本返回 409；队伍正式提交改变公开作品名也会增加名录版本。赛道选项为 AI for Science、城市与社区问题、未来学习样态；升级前未知赛道原样保留并标注，不能自动归类。状态、展位和路演顺序不改历史快照，不自动选队或排程。
 
