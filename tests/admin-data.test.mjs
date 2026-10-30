@@ -6,6 +6,7 @@ import vm from 'node:vm';
 const source=fs.readFileSync(new URL('../platform-admin.js',import.meta.url),'utf8')+'\n'+
   fs.readFileSync(new URL('../platform.js',import.meta.url),'utf8').split("window.addEventListener('hashchange'")[0];
 const wait=()=>new Promise(resolve=>setImmediate(resolve));
+const settle=async()=>{await wait();await wait();await wait();};
 const deferred=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return {promise,resolve};};
 const ok=value=>({ok:true,json:async()=>value});
 function form(values={}){
@@ -229,7 +230,7 @@ function teamHarness(fetch,directoryOverrides={}){
   return {context,entry,elements,eventData,buttons:()=>buttons,credentialButtons:()=>credentialButtons};
 }
 
-test('team editing submits its explicit revision and keeps edits made during the save',async()=>{
+test('team editing adopts the POST revision, keeps new input and allows the next save',async()=>{
   const post=deferred(),requests=[];
   let eventData;
   const {context,entry,eventData:directory}=teamHarness(async(url,options)=>{
@@ -239,31 +240,63 @@ test('team editing submits its explicit revision and keeps edits made during the
   eventData=directory;
   entry.input();entry.onsubmit({preventDefault(){}});
   entry.elements.name.value='NEW NAME DURING POST';entry.input();
-  post.resolve(ok({ok:true}));await wait();
-  assert.equal(requests[0].path,'/api/admin/teams');
-  assert.equal(requests[0].body.expectedRevision,7);
-  assert.equal(requests[0].body.name,'Submitted name');
+  post.resolve(ok({ok:true,team:{id:'T1',number:1,name:'Submitted name',project:'P',track:'AI for Science',revision:8}}));await settle();
+  const posts=()=>requests.filter(row=>row.method==='POST');
+  assert.equal(posts()[0].path,'/api/admin/teams');
+  assert.equal(posts()[0].body.expectedRevision,7);
+  assert.equal(posts()[0].body.name,'Submitted name');
   assert.equal(entry.elements.name.value,'NEW NAME DURING POST');
-  assert.equal(entry.elements.expectedRevision.value,'7');
+  assert.equal(entry.elements.expectedRevision.value,'8');
   assert.equal(vm.runInContext('dirtyAdminForms.size',context),1);
+  assert.equal(entry.button.disabled,false,'first save must release the submit button');
+  entry.onsubmit({preventDefault(){}});await settle();
+  assert.equal(posts()[1].body.id,'T1');
+  assert.equal(posts()[1].body.expectedRevision,8);
+  assert.equal(posts()[1].body.name,'NEW NAME DURING POST');
+  assert.equal(vm.runInContext('dirtyAdminForms.size',context),0);
+});
+
+test('creating a team during continued input adopts the returned ID for the next save',async()=>{
+  const post=deferred(),requests=[];
+  let eventData;
+  const h=teamHarness(async(url,options)=>{
+    requests.push({path:url.pathname,method:options.method,body:options.body?JSON.parse(options.body):null});
+    return options.method==='POST'?post.promise:ok(eventData);
+  });
+  eventData=h.eventData;
+  const entry=h.entry;
+  entry.elements.id.value='';entry.elements.expectedRevision.value='';
+  entry.elements.number.value='3';entry.elements.name.value='Submitted create';
+  entry.elements.project.value='P';entry.elements.track.value='AI for Science';
+  entry.input();entry.onsubmit({preventDefault(){}});
+  entry.elements.name.value='NEW NAME DURING CREATE';entry.input();
+  const posts=()=>requests.filter(row=>row.method==='POST');
+  assert.equal(posts()[0].body.id,undefined);
+  post.resolve(ok({ok:true,team:{id:'T3',number:3,name:'Submitted create',project:'P',track:'AI for Science',revision:1}}));await settle();
+  assert.equal(entry.elements.id.value,'T3');
+  assert.equal(entry.elements.expectedRevision.value,'1');
+  assert.equal(entry.elements.name.value,'NEW NAME DURING CREATE');
+  assert.equal(vm.runInContext('dirtyAdminForms.size',h.context),1);
+  entry.onsubmit({preventDefault(){}});await settle();
+  assert.equal(posts()[1].body.id,'T3');
+  assert.equal(posts()[1].body.expectedRevision,1);
+  assert.equal(posts()[1].body.name,'NEW NAME DURING CREATE');
+  assert.equal(vm.runInContext('dirtyAdminForms.size',h.context),0);
 });
 
 for(const target of ['another team','cleared form']){
-  test(`team save directory refresh cannot restore the saved ID into ${target}`,async()=>{
-    const directory=deferred(),started=deferred();
-    const h=teamHarness(async(_url,options)=>{
-      if(options.method==='POST')return ok({ok:true});
-      started.resolve();return directory.promise;
-    });
+  test(`a late team save response cannot restore the saved identity into ${target}`,async()=>{
+    const post=deferred();
+    let h;
+    h=teamHarness(async(_url,options)=>options.method==='POST'?post.promise:ok(h.eventData));
     h.entry.input();h.entry.onsubmit({preventDefault(){}});
-    await started.promise;
     if(target==='another team')h.buttons().find(button=>button.dataset.editTeam==='T2').onclick();
     else h.elements['clear-team'].onclick();
     const identity={id:h.entry.elements.id.value,revision:h.entry.elements.expectedRevision.value,name:h.entry.elements.name.value};
-    const latest={...h.eventData,teams:h.eventData.teams.map(team=>team.id==='T1'?{...team,revision:8}:team)};
-    directory.resolve(ok(latest));await wait();
+    post.resolve(ok({ok:true,team:{id:'T1',number:1,name:'Submitted name',project:'P',track:'AI for Science',revision:8}}));await wait();
     assert.deepEqual({id:h.entry.elements.id.value,revision:h.entry.elements.expectedRevision.value,name:h.entry.elements.name.value},identity);
     assert.equal(h.entry.elements.id.value,target==='another team'?'T2':'');
+    assert.equal(h.entry.elements.expectedRevision.value,target==='another team'?'10':'');
   });
 }
 

@@ -22,6 +22,17 @@ OLD_SERVICES = ['etown-hackathon', 'nginx', 'realtalk-api', 'dapm']
 BEGIN = '    # BEGIN GOTC HACKATHON MANAGED LOCATION\n'
 END = '    # END GOTC HACKATHON MANAGED LOCATION\n'
 LOCATIONS = BEGIN + '''    location = /gotc { return 308 /gotc/; }
+    location = /gotc/api/admin/data/import/preview {
+        proxy_pass http://127.0.0.1:5274;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
+        client_max_body_size 2m;
+    }
     location ^~ /gotc/ {
         proxy_pass http://127.0.0.1:5274;
         proxy_http_version 1.1;

@@ -196,7 +196,7 @@ python3 -B scripts/backup_event.py restore /private/backups/event-copy.sqlite3 /
 
 生产仅 loopback + Nginx。静态根目录为项目根，但只允许 `index.html`、`styles.css`、`app.js`、`platform.html`、`platform.js`、`platform.css`、`favicon.svg`、`assets/` 中的图片/字体、`downloads/` 中的 txt/ics。服务拒绝隐藏文件、路径穿越、越界符号链接和目录列表；不会公开 `server/`、文档、数据库或凭据。
 
-接口禁止跨域写入，JSON 上限为提交材料端点 32KB、其余端点 16KB，登录按真实来源 IP/身份限速为每分钟 20 次，另有每身份每分钟 400 次全局上限。Nginx 必须覆盖可信代理 IP 头。CSP 仅允许本站脚本、样式、字体和请求，不允许内联脚本、外部框架或嵌入页面。所有响应禁用缓存。
+接口禁止跨域写入，JSON 上限为 CSV 导入预览端点 2 MiB、提交材料端点 32KB、其余端点 16KB，登录按真实来源 IP/身份限速为每分钟 20 次，另有每身份每分钟 400 次全局上限。Nginx 对导入预览路径单独放行 2 MiB，其余 `/gotc/` 请求保持 32KB，应用端点限额仍然强制执行。Nginx 必须覆盖可信代理 IP 头。CSP 仅允许本站脚本、样式、字体和请求，不允许内联脚本、外部框架或嵌入页面。所有响应禁用缓存。
 
 ## 验证
 

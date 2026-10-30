@@ -22,8 +22,12 @@ It never reads the key into logs, shell arguments or the repository.
 
 The new service uses `/opt/gotc-hackathon`, system user/service `gotc-hackathon`,
 loopback port 5274, and `https://8.141.114.201/gotc/`. Python 3.12 standard library
-is sufficient on the server. Nginx preserves `/gotc` when proxying. The 27 September
-event routes and databases are independent and untouched.
+is sufficient on the server. Nginx preserves `/gotc` when proxying. Its managed
+location allows a 2 MiB JSON body only for `/gotc/api/admin/data/import/preview`
+so a legal 256 KiB CSV can pass after JSON escaping; every other `/gotc/` request
+keeps the 32 KiB proxy limit, and the application still enforces its own
+per-endpoint limits. The 27 September event routes and databases are independent
+and untouched.
 
 Before activation the installer backs up Nginx and any existing GOTC SQLite
 database. It verifies the new service locally, tests and reloads Nginx, checks

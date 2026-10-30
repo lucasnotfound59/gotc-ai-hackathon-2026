@@ -81,12 +81,13 @@ function installAdminData(data,version){
     table.querySelectorAll('[data-edit-team]').forEach(button=>button.onclick=()=>{
       const form=formFrom('team-form');
       if(dirtyAdminForms.has(form) && !confirm('表单有未保存的修改，确认载入另一支队伍？'))return;
+      form.editSession=(form.editSession || 0)+1;
       const team=ctx.data.teams.find(item=>item.id===button.dataset.editTeam);
       const track=form.elements.track;
       track.innerHTML=adminOptions((ctx.data.trackOptions || []).map(name=>({name})),'name',item=>item.name,'请选择赛道');
       if(team.track && ![...track.options].some(option=>option.value===team.track))track.insertAdjacentHTML('beforeend',`<option value="${esc(team.track)}">${esc(team.track)}（历史赛道）</option>`);
       for(const key of ['id','number','name','project','track','status','statusReason','booth','roadshowOrder'])form.elements[key].value=team[key] ?? (key==='status'?'active':'');
-      form.elements.expectedRevision.value=team.revision ?? 0;
+      form.elements.expectedRevision.value=String(team.revision ?? 0);
       form.editRevision=(form.editRevision || 0)+1;dirtyAdminForms.delete(form);
       form.querySelector('[type=submit]').textContent='保存队伍修改';form.scrollIntoView({behavior:'smooth',block:'center'});form.elements.name.focus();
     });
@@ -95,19 +96,22 @@ function installAdminData(data,version){
   teamForm.querySelector('.form-grid').insertAdjacentHTML('beforeend',`<input type="hidden" name="expectedRevision"><label class="field">参赛状态<select name="status"><option value="active">参赛中</option><option value="withdrawn">退出</option><option value="disqualified">取消资格</option></select></label><label class="field">状态变更原因<input name="statusReason" maxlength="500" placeholder="退出或取消资格时必填"></label><label class="field">展示展位<input name="booth" maxlength="80" placeholder="例如：A-01"></label><label class="field">路演顺序<input name="roadshowOrder" type="number" min="1" max="9999" placeholder="留空表示未安排"></label>`);
   teamForm.insertAdjacentHTML('afterbegin','<p class="small-note">名录修改不会改写已冻结的评审轮次。状态和路演顺序不代表晋级结果。</p>');
   teamForm.onsubmit=event=>{
-    event.preventDefault();const values=teamForm.elements;
+    event.preventDefault();const values=teamForm.elements,session=teamForm.editSession || 0,editingId=values.id.value;
     if(values.status.value!=='active' && !values.statusReason.value.trim()){formError(teamForm,'请填写退出或取消资格的原因。');return;}
     const payload={number:Number(values.number.value),name:values.name.value.trim(),project:values.project.value.trim(),track:values.track.value,status:values.status.value,statusReason:values.statusReason.value.trim(),booth:values.booth.value.trim(),roadshowOrder:values.roadshowOrder.value?Number(values.roadshowOrder.value):null};
     if(values.id.value){payload.id=values.id.value;payload.expectedRevision=Number(values.expectedRevision.value);}
-    adminSaveForm(teamForm,'admin/teams',payload,async(_result,unchanged)=>{
-      const savedRevision=teamForm.editRevision || 0;
-      toast('队伍信息已保存。');const latest=await refreshDirectory();
-      if(!unchanged || !latest || !teamForm.isConnected || dirtyAdminForms.has(teamForm) || (teamForm.editRevision || 0)!==savedRevision)return;
-      const saved=latest.teams.find(team=>payload.id?team.id===payload.id:team.number===payload.number);
-      if(saved){values.id.value=saved.id;values.expectedRevision.value=saved.revision;teamForm.querySelector('[type=submit]').textContent='保存队伍修改';}
+    adminSaveForm(teamForm,'admin/teams',payload,async result=>{
+      const saved=result?.team;
+      // Only adopt the version from this POST. A later directory read may include
+      // another administrator's newer version, which must not be skipped locally.
+      if(saved && (teamForm.editSession || 0)===session && values.id.value===editingId){
+        values.id.value=saved.id;values.expectedRevision.value=String(saved.revision);
+        teamForm.querySelector('[type=submit]').textContent='保存队伍修改';
+      }
+      toast('队伍信息已保存。');await refreshDirectory();
     });
   };
-  document.getElementById('clear-team').onclick=()=>{teamForm.reset();teamForm.elements.id.value='';teamForm.elements.expectedRevision.value='';teamForm.editRevision=(teamForm.editRevision || 0)+1;dirtyAdminForms.delete(teamForm);teamForm.querySelector('[type=submit]').textContent='新增队伍';};
+  document.getElementById('clear-team').onclick=()=>{teamForm.reset();teamForm.elements.id.value='';teamForm.elements.expectedRevision.value='';teamForm.editRevision=(teamForm.editRevision || 0)+1;teamForm.editSession=(teamForm.editSession || 0)+1;dirtyAdminForms.delete(teamForm);teamForm.querySelector('[type=submit]').textContent='新增队伍';};
   renderDirectory();
 
   function renderCredentials(){

@@ -2,6 +2,7 @@
 import csv
 from contextlib import closing,contextmanager
 from concurrent.futures import ThreadPoolExecutor
+import http.client
 import io
 import json
 from pathlib import Path
@@ -526,6 +527,21 @@ class AdminDataTests(unittest.TestCase):
         self.assertEqual(status,200,result)
         self.assertTrue(result['canCommit'])
         self.assertEqual(result['counts']['create'],350)
+        self.assertEqual(self.entities(),before)
+
+    def test_import_preview_transport_limit_stays_at_two_mib_and_rejects_larger_bodies(self):
+        before=self.entities()
+        conn=http.client.HTTPConnection('127.0.0.1',self.server.server_port,timeout=20)
+        conn.putrequest('POST',self.server.service.base_path+'/api/admin/data/import/preview')
+        conn.putheader('Cookie',self.admin.cookie)
+        conn.putheader('Content-Type','application/json')
+        conn.putheader('Origin',self.server.service.origin)
+        conn.putheader('Content-Length',str(app.IMPORT_BODY_LIMIT+1))
+        conn.endheaders()
+        response=conn.getresponse()
+        self.assertEqual(response.status,413)
+        response.read()
+        conn.close()
         self.assertEqual(self.entities(),before)
 
     def test_concurrent_import_consumption_and_competing_new_team_plans_are_atomic(self):
