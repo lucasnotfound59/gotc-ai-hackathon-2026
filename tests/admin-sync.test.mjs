@@ -63,3 +63,18 @@ test('malformed marker cannot change the badge or consume a revision',async()=>{
     await s.tick();assert.equal(s.calls.applied,1);assert.equal(s.calls.stage,1);s.controller.stop();
   }
 });
+
+test('read-only review patch writes only stage record statistics and preserves professional controls',()=>{
+  const platform=fs.readFileSync(new URL('../platform.js',import.meta.url),'utf8').split("window.addEventListener('hashchange'")[0];
+  const ids=[],scrollBox={scrollLeft:0,scrollTop:0},body={children:[],innerHTML:'',closest:()=>scrollBox};
+  const professional={innerHTML:'SIX_DIMENSION_PROFESSIONAL_SETTINGS',elements:{scoringOpen:{checked:true},resultsPublished:{checked:true},minJudges:{value:'5'}}};
+  const elements={'platform-main':{innerHTML:'PROFESSIONAL_METRICS'},'settings-form':professional,'admin-stage-reviews':{textContent:'7'},'admin-sync-query-note':{hidden:true}};
+  const view={container:{isConnected:true,querySelector:()=>body},stage:'exhibition',runId:'run-a',revision:2};
+  const context=vm.createContext({document:{getElementById:id=>{ids.push(id);return elements[id];}},window:{scrollX:0,scrollY:0},location:{href:'https://example.test/platform.html#admin'},URL,Date,setTimeout,clearTimeout,view});
+  vm.runInContext(platform+"\nroute='admin';adminStage='exhibition';adminReadOnlyView=view;",context);ids.length=0;
+  const applied=vm.runInContext("patchAdminReviewData(view,{stage:{id:'exhibition',runId:'run-a',revision:2},reviews:[]})",context);
+  assert.equal(applied,true);assert.equal(elements['admin-stage-reviews'].textContent,'0');
+  assert.deepEqual(ids,['admin-stage-reviews','admin-sync-query-note']);
+  assert.equal(professional.innerHTML,'SIX_DIMENSION_PROFESSIONAL_SETTINGS');assert.equal(professional.elements.minJudges.value,'5');
+  assert.equal(elements['platform-main'].innerHTML,'PROFESSIONAL_METRICS');
+});

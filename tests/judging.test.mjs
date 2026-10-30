@@ -75,13 +75,13 @@ test('switching teams while a saved review refreshes preserves the new editor an
   const draftButton={},recuseButton={},editor={innerHTML:''},main={innerHTML:''};
   const elements={'platform-main':main,'judge-editor':editor,'review-form':form,'save-review-draft':draftButton,'recuse-review':recuseButton,
     'platform-toast':{textContent:'',classList:{add(){},remove(){}}}};
-  const context=vm.createContext({document:{getElementById:id=>elements[id]},location:{href:'https://example.test/gotc/platform.html#judge'},
+  const context=vm.createContext({document:{getElementById:id=>elements[id]},location:{href:'https://example.test/gotc/platform.html#judge-exhibition'},
     URL,TextEncoder,Intl,Date,setTimeout:()=>0,clearTimeout,confirm:()=>true,
     fetch:async(_url,options)=>{
       if(options.method==='POST')return {ok:true,json:async()=>({ok:true})};
       startedRefresh();return new Promise(resolve=>{resolveRefresh=()=>resolve({ok:true,json:async()=>refreshedData});});
     }});
-  vm.runInContext(source+`\nroute='judge';routeVersion=1;selectedTeam='T1';judgeData=${JSON.stringify(refreshedData)};renderJudgeEditor();renderTeamPicker=()=>{};renderJudgeEditor=()=>{};`,context);
+  vm.runInContext(source+`\nroute='judge-exhibition';routeVersion=1;selectedTeam='T1';judgeData=${JSON.stringify(refreshedData)};renderExhibitionJudgeEditor();renderExhibitionTeamPicker=()=>{};renderExhibitionJudgeEditor=()=>{};`,context);
   const saving=draftButton.onclick();
   await refreshStarted;
   // A's POST succeeded; its follow-up GET is still pending while B is opened and edited.
@@ -104,13 +104,13 @@ test('switching teams while a conflict recovery refreshes preserves the new edit
   const draftButton={},reloadButton={},editor={innerHTML:''},main={innerHTML:''},conflict={innerHTML:''};
   const elements={'platform-main':main,'judge-editor':editor,'review-form':form,'save-review-draft':draftButton,
     'recuse-review':{},'review-conflict':conflict,'reload-review':reloadButton};
-  const context=vm.createContext({document:{getElementById:id=>elements[id]},location:{href:'https://example.test/gotc/platform.html#judge'},
+  const context=vm.createContext({document:{getElementById:id=>elements[id]},location:{href:'https://example.test/gotc/platform.html#judge-exhibition'},
     URL,TextEncoder,Intl,Date,setTimeout:()=>0,clearTimeout,confirm:()=>true,
     fetch:async(_url,options)=>{
       if(options.method==='POST')return {ok:false,status:409,json:async()=>({error:'Synthetic version conflict'})};
       startedRefresh();return new Promise(resolve=>{resolveRefresh=()=>resolve({ok:true,json:async()=>refreshedData});});
     }});
-  vm.runInContext(source+`\nroute='judge';routeVersion=1;selectedTeam='T1';reviewDirty=true;judgeData=${JSON.stringify(refreshedData)};renderJudgeEditor();renderTeamPicker=()=>{};renderJudgeEditor=()=>{};`,context);
+  vm.runInContext(source+`\nroute='judge-exhibition';routeVersion=1;selectedTeam='T1';reviewDirty=true;judgeData=${JSON.stringify(refreshedData)};renderExhibitionJudgeEditor();renderExhibitionTeamPicker=()=>{};renderExhibitionJudgeEditor=()=>{};`,context);
   await draftButton.onclick();
   assert.equal(error.textContent,'Synthetic version conflict');
   assert.equal(feedback.readOnly,true);
@@ -137,10 +137,10 @@ test('judge rendering excludes invalidated formal records from its count and kee
     submitted:{feedback:'ORIGINAL_FORMAL_RETAINED',submittedAt:1},draft:{feedback:'Original saved input'}};
   const data={stage,teams:[team(1)],myReviews:[record],window:{canEdit:false,deadline:null}};
   const context=vm.createContext({document:{getElementById:id=>elements[id],querySelectorAll:()=>[]},
-    location:{href:'https://example.test/platform.html#judge'},URL,TextEncoder,Intl,Date,setTimeout,clearTimeout,
+    location:{href:'https://example.test/platform.html#judge-exhibition'},URL,TextEncoder,Intl,Date,setTimeout,clearTimeout,
     fetch:async()=>({ok:true,json:async()=>data})});
-  vm.runInContext(source+"\nroute='judge';routeVersion=1;",context);
-  await vm.runInContext('renderJudge(1)',context);
+  vm.runInContext(source+"\nroute='judge-exhibition';routeVersion=1;",context);
+  await vm.runInContext('renderExhibitionJudge(1)',context);
   assert.match(main.innerHTML,/已正式提交 0 份评审记录/);
   assert.match(editor.innerHTML,/组织方已作废此记录/);
   assert.match(editor.innerHTML,/继续修改仍会保留作废状态/);
