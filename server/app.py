@@ -20,9 +20,10 @@ from collections import defaultdict, deque
 from decimal import Decimal, InvalidOperation
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, urlsplit, parse_qs
 from errors import APIError
 from judging import JudgingService
+from admin_data import AdminDataService, TRACK_OPTIONS
 
 DIMENSIONS = [
     {"id": "problem", "name": "问题价值与理解", "max": 20},
@@ -34,10 +35,11 @@ DIMENSIONS = [
 ]
 BODY_LIMIT = 16384
 SUBMISSION_BODY_LIMIT = 32768
+IMPORT_BODY_LIMIT = 2 * 1024 * 1024
 SESSION_SECONDS = 12 * 3600
 VOTE_LIMIT = 3
 COOKIE_NAME = "gotc_session"
-STATIC_FILES = {"index.html", "styles.css", "app.js", "platform.html", "platform.js", "platform.css", "favicon.svg"}
+STATIC_FILES = {"index.html", "styles.css", "app.js", "platform.html", "platform.js", "platform-admin.js", "platform.css", "favicon.svg"}
 ASSET_EXTENSIONS = {".webp", ".png", ".jpg", ".jpeg", ".svg", ".ico", ".woff", ".woff2"}
 DOWNLOAD_EXTENSIONS = {".ics", ".txt"}
 SCHEMA = """
@@ -145,13 +147,21 @@ class EventService:
         self.db_path = self.data_dir / "event.sqlite3"
         self.rate_lock = threading.Lock()
         self.login_attempts = defaultdict(deque)
-        self.judging=JudgingService(clock=lambda:now_ms(),text=text_field,audit=self.audit,touch=self.touch)
+        self.judging=JudgingService(clock=lambda:now_ms(),text=text_field,audit=self.audit,touch=self.touch,
+            history=lambda *args,**kwargs:self.admin_data.record_review_change(*args,**kwargs),
+            enrich_team=lambda db,team:self.admin_data.enrich_team(db,team))
+        self.admin_data=AdminDataService(self)
+        self.admin_data.backup_before_upgrade()
         self.migrate_accounts()
         with self.db() as db:
             db.executescript(SCHEMA)
             self.judging.initialize(db)
+            self.admin_data.initialize(db)
             for key, value in {"scoringOpen": False, "resultsPublished": True, "minJudges": 5, "submissionsOpen": False, "submissionDeadline": None, "updatedAt": now_ms()}.items():
                 db.execute("INSERT OR IGNORE INTO settings VALUES (?,?)", (key, json.dumps(value)))
+            # Preserve an upgraded event's current audience window once; later changes are independent.
+            db.execute("INSERT OR IGNORE INTO settings SELECT 'votingOpen',value FROM settings WHERE key='scoringOpen'")
+            db.execute("INSERT OR IGNORE INTO settings VALUES ('votingDeadline','null')")
             if not db.execute("SELECT 1 FROM accounts WHERE role='admin'").fetchone():
                 account, code = self.create_account(db, "admin", "活动管理员")
                 # Exclusive creation prevents silently overwriting an earlier credential file.
@@ -162,7 +172,7 @@ class EventService:
                 os.chmod(access_file, 0o600)
                 self.audit(db, account, "bootstrap")
             for role, code in self.shared_login_codes.items():
-                for account in db.execute("SELECT * FROM accounts WHERE role=?", (role,)).fetchall():
+                for account in db.execute("SELECT * FROM accounts WHERE role=? AND id NOT IN (SELECT account_id FROM credential_overrides)", (role,)).fetchall():
                     if not hmac.compare_digest(scrypt_hash(code, account["salt"]), account["code_hash"]):
                         salt = secrets.token_bytes(16)
                         db.execute("UPDATE accounts SET salt=?,code_hash=? WHERE id=?", (salt, scrypt_hash(code, salt), account["id"]))
@@ -233,6 +243,30 @@ class EventService:
         result.update(dimensions=DIMENSIONS, voteLimit=VOTE_LIMIT, audienceIncludedInScore=False, maxScore=100)
         return result
 
+    def voting_window(self, db):
+        config=self.config(db);current=now_ms()
+        return {'open':config['votingOpen'],'deadline':config['votingDeadline'],
+                'canEdit':config['votingOpen'] and (config['votingDeadline'] is None or current<config['votingDeadline']),'serverTime':current}
+
+    def credential_action(self, db, actor, body):
+        if set(body)!={'role','id','action'} or not isinstance(body['role'],str) or body['role'] not in {'judge','audience'} \
+                or not isinstance(body['action'],str) or body['action'] not in {'rotate','revoke'} or not isinstance(body['id'],str):
+            raise APIError(400,'凭据操作目标不正确')
+        target=db.execute('SELECT * FROM accounts WHERE id=? AND role=?',(body['id'],body['role'])).fetchone()
+        if not target:raise APIError(404,'身份不存在')
+        before={'active':bool(target['active']),'credentialMode':self.admin_data.credential_mode(db,target['id'],target['role'])}
+        result={'ok':True,'id':target['id'],'active':body['action']=='rotate'}
+        if body['action']=='rotate':
+            code=target['id']+'.'+secrets.token_urlsafe(32);salt=secrets.token_bytes(16)
+            db.execute('UPDATE accounts SET salt=?,code_hash=?,active=1 WHERE id=?',(salt,scrypt_hash(code,salt),target['id']))
+            db.execute('INSERT INTO credential_overrides VALUES (?,?) ON CONFLICT(account_id) DO UPDATE SET rotated_at=excluded.rotated_at',(target['id'],now_ms()))
+            result['code']=code
+        else:db.execute('UPDATE accounts SET active=0 WHERE id=?',(target['id'],))
+        db.execute('DELETE FROM sessions WHERE account_id=?',(target['id'],))
+        result['credentialMode']=self.admin_data.credential_mode(db,target['id'],target['role'])
+        self.audit(db,actor,'credential.'+body['action'],target['id'],{'role':target['role'],'before':before,'after':{key:result[key] for key in ('active','credentialMode')}})
+        return result
+
     def touch(self, db):
         db.execute("UPDATE settings SET value=? WHERE key='updatedAt'", (json.dumps(now_ms()),))
 
@@ -295,7 +329,7 @@ class EventService:
                 rank = position
             row["rank"] = rank
             previous = row["score"]
-        return result
+        return result if public else [self.admin_data.enrich_team(db,team) for team in result]
 
     def require(self, actor, role):
         if actor is None:
@@ -303,13 +337,20 @@ class EventService:
         if actor["role"] != role:
             raise APIError(403, "当前身份无权访问")
 
-    def dispatch(self, method, path, body, cookie, ip):
+    def dispatch(self, method, path, body, cookie, ip, query=None):
         """Return (JSON object or CSV bytes, optional session token, cookie action)."""
         with self.db() as db:
             # Resolve write identities only after the lock: revocation may have committed while queued.
             if method=="POST":
                 db.execute("BEGIN IMMEDIATE")
             actor = self.account(db, cookie)
+            if path.startswith('/api/admin/data/'):
+                parsed_cookie=SimpleCookie()
+                try:parsed_cookie.load(cookie)
+                except CookieError:pass
+                session_token=parsed_cookie[COOKIE_NAME].value if COOKIE_NAME in parsed_cookie else ''
+                session_hash=hashlib.sha256(session_token.encode()).hexdigest()
+                return self.admin_data.dispatch(db,actor,method,path,body,query or {},session_hash),None,None
             if path.startswith(("/api/judging/","/api/admin/judging/")):
                 return self.judging.dispatch(db,actor,method,path,body), None, None
             if method == "GET" and path == "/api/session":
@@ -328,7 +369,7 @@ class EventService:
                     raise APIError(400, "登录身份不正确")
                 shared_code = self.shared_login_codes.get(role)
                 if selector is None and shared_code and hmac.compare_digest(code.encode(), shared_code.encode()):
-                    candidates = db.execute("SELECT id,name FROM accounts WHERE role=? AND active=1 ORDER BY created_at,id", (role,)).fetchall()
+                    candidates = db.execute("SELECT id,name FROM accounts WHERE role=? AND active=1 AND id NOT IN (SELECT account_id FROM credential_overrides) ORDER BY created_at,id", (role,)).fetchall()
                     if len(candidates) > 1:
                         return {"selectAccount": True, "accounts": [{"id": a["id"], "name": a["name"]} for a in candidates]}, None, None
                     if candidates:
@@ -382,11 +423,13 @@ class EventService:
             if method == "GET" and path == "/api/audience":
                 self.require(actor, "audience")
                 voted = [r[0] for r in db.execute("SELECT team_id FROM votes WHERE account_id=? ORDER BY created_at,team_id", (actor["id"],))]
-                return {"teams": self.teams(db), "votedTeamIds": voted, "voteLimit": VOTE_LIMIT, "votingOpen": self.config(db)["scoringOpen"], "name": actor["name"]}, None, None
+                window=self.voting_window(db)
+                return {"teams": self.teams(db), "votedTeamIds": voted, "voteLimit": VOTE_LIMIT, "votingOpen": window['canEdit'],
+                        'votingDeadline':window['deadline'],'window':window,"name": actor["name"]}, None, None
             if method == "POST" and path == "/api/vote":
                 self.require(actor, "audience")
-                if not self.config(db)["scoringOpen"]:
-                    raise APIError(409, "观众投票尚未开放或已关闭")
+                if not self.voting_window(db)['canEdit']:
+                    raise APIError(409, "观众投票尚未开放、已关闭或已截止")
                 team_id = self.team_exists(db, body.get("teamId"))
                 already = db.execute("SELECT 1 FROM votes WHERE account_id=? AND team_id=?", (actor["id"], team_id)).fetchone()
                 if not already:
@@ -412,61 +455,43 @@ class EventService:
                     judges = [{"id": r["id"], "name": r["name"], "active": bool(r["active"]), "submittedCount": r["submitted_count"]}
                               for r in db.execute("SELECT a.id,a.name,a.active,COUNT(s.team_id) AS submitted_count FROM accounts a LEFT JOIN scores s ON s.judge_id=a.id AND s.status='submitted' WHERE a.role='judge' GROUP BY a.id ORDER BY a.created_at")]
                     audience = [{"id": r["id"], "name": r["name"], "active": bool(r["active"])} for r in db.execute("SELECT id,name,active FROM accounts WHERE role='audience' ORDER BY created_at")]
+                    for person in judges:person['credentialMode']=self.admin_data.credential_mode(db,person['id'],'judge')
+                    for person in audience:person['credentialMode']=self.admin_data.credential_mode(db,person['id'],'audience')
                     stats = {"teamCount": db.execute("SELECT COUNT(*) FROM teams").fetchone()[0], "submittedScores": db.execute("SELECT COUNT(*) FROM scores WHERE status='submitted'").fetchone()[0], "audienceVotes": db.execute("SELECT COUNT(*) FROM votes").fetchone()[0]}
-                    return {"teams": self.teams(db, public=False), "judges": judges, "audience": audience, "config": self.config(db), "stats": stats, "submissions": self.admin_submissions(db)}, None, None
+                    return {"teams": self.teams(db, public=False), "judges": judges, "audience": audience, "config": self.config(db), "stats": stats, "submissions": self.admin_submissions(db),'trackOptions':TRACK_OPTIONS}, None, None
                 if method == "POST" and path == "/api/admin/settings":
-                    allowed = {"scoringOpen", "resultsPublished", "minJudges", "submissionsOpen", "submissionDeadline"}
+                    allowed = {"scoringOpen", "resultsPublished", "minJudges", "submissionsOpen", "submissionDeadline",'votingOpen','votingDeadline'}
                     if not body or not set(body).issubset(allowed):
                         raise APIError(400, "设置字段不正确")
+                    before={key:self.config(db).get(key) for key in body}
                     for key, value in body.items():
                         if key == "minJudges":
                             if type(value) is not int or not 1 <= value <= 50:
                                 raise APIError(400, "最少评委数应为1至50的整数")
-                        elif key=="submissionDeadline":
+                        elif key in {"submissionDeadline",'votingDeadline'}:
                             if value is not None and (type(value) is not int or not 0<=value<=253402300799999):
-                                raise APIError(400, "提交截止时间必须是有效的毫秒时间戳或空值")
+                                raise APIError(400, "窗口截止时间必须是有效的毫秒时间戳或空值")
                         elif type(value) is not bool:
                             raise APIError(400, "开放与公开状态必须为布尔值")
                         db.execute("UPDATE settings SET value=? WHERE key=?", (json.dumps(value), key))
                     self.touch(db)
-                    self.audit(db, actor, "settings", metadata=body)
+                    self.audit(db, actor, "settings", metadata={'before':before,'after':body})
                     return {"ok": True, "config": self.config(db)}, None, None
                 if method == "POST" and path == "/api/admin/teams":
-                    number = body.get("number")
-                    if type(number) is not int or not 1 <= number <= 999:
-                        raise APIError(400, "队号应为1至999的整数")
-                    name = text_field(body.get("name"), "队名", 80, True)
-                    project = text_field(body.get("project", ""), "项目名", 140)
-                    track = text_field(body.get("track", ""), "赛道", 80)
-                    team_id = body.get("id")
-                    if team_id is not None:
-                        team_id = self.team_exists(db, team_id)
-                        db.execute("UPDATE teams SET number=?,name=?,project=?,track=?,updated_at=? WHERE id=?", (number, name, project, track, now_ms(), team_id))
-                    else:
-                        team_id = "T" + secrets.token_hex(8)
-                        db.execute("INSERT INTO teams VALUES (?,?,?,?,?,?)", (team_id, number, name, project, track, now_ms()))
-                    self.touch(db)
-                    self.audit(db, actor, "team.save", team_id)
-                    return {"ok": True, "team": {"id": team_id, "number": number, "name": name, "project": project, "track": track}}, None, None
+                    return {'ok':True,'team':self.admin_data.save_team(db,actor,body)},None,None
+                if method=='POST' and path=='/api/admin/credentials':
+                    return self.credential_action(db,actor,body),None,None
                 if method == "POST" and path == "/api/admin/invitations":
                     role = body.get("role")
                     if role not in {"judge", "audience"}:
                         raise APIError(400, "只能创建评委或观众邀请")
                     name = text_field(body.get("name"), "称呼", 80, True)
                     account, code = self.create_account(db, role, name)
-                    self.audit(db, actor, "invitation.create", account["id"], {"role": role})
+                    self.audit(db, actor, "invitation.create", account["id"], {"role": role,'before':None,
+                               'after':{'id':account['id'],'name':name,'active':True,'credentialMode':self.admin_data.credential_mode(db,account['id'],role)}})
                     return {"id": account["id"], "name": name, "code": code}, None, None
                 if method == "POST" and path == "/api/admin/revoke":
-                    role, account_id = body.get("role"), body.get("id")
-                    if role not in {"judge", "audience"} or not isinstance(account_id, str):
-                        raise APIError(400, "停用目标不正确")
-                    target = db.execute("SELECT id FROM accounts WHERE id=? AND role=?", (account_id, role)).fetchone()
-                    if not target:
-                        raise APIError(404, "邀请不存在")
-                    db.execute("UPDATE accounts SET active=0 WHERE id=?", (account_id,))
-                    db.execute("DELETE FROM sessions WHERE account_id=?", (account_id,))
-                    self.audit(db, actor, "invitation.revoke", account_id, {"role": role})
-                    return {"ok": True}, None, None
+                    return self.credential_action(db,actor,{**body,'action':'revoke'}),None,None
                 if method=="POST" and path=="/api/admin/team-access":
                     return self.team_access(db, actor, body), None, None
                 if method=="GET" and path=="/api/admin/submissions/export":
@@ -512,6 +537,7 @@ class EventService:
         team_id=self.team_exists(db, body["teamId"])
         action=body["action"]
         account=db.execute("SELECT a.* FROM accounts a JOIN team_accounts t ON t.account_id=a.id WHERE t.team_id=?", (team_id,)).fetchone()
+        before={'id':account['id'],'active':bool(account['active'])} if account else None
         if action=="issue":
             if account:
                 raise APIError(409, "该队已有提交身份，请重发提交码")
@@ -528,7 +554,7 @@ class EventService:
                 db.execute("UPDATE accounts SET salt=?,code_hash=?,active=1 WHERE id=?", (salt, scrypt_hash(code, salt), account["id"]))
             else:
                 db.execute("UPDATE accounts SET active=0 WHERE id=?", (account["id"],))
-        self.audit(db, actor, "team-access."+action, team_id)
+        self.audit(db, actor, "team-access."+action, team_id,{'before':before,'after':{'id':account['id'],'active':action!='revoke'}})
         result={"ok": True, "teamId": team_id, "id": account["id"], "active": action!="revoke"}
         if action!="revoke":
             result["code"]=code
@@ -593,6 +619,7 @@ class EventService:
            current if submitted else previous["submittedAt"], current))
         if submitted:
             db.execute("UPDATE teams SET project=?,updated_at=? WHERE id=?", (materials["projectName"], current, team["id"]))
+            db.execute('UPDATE team_details SET revision=revision+1 WHERE team_id=?',(team['id'],))
             self.touch(db)
         self.audit(db, actor, "submission."+body["status"], team["id"], {"version": version})
         updated=db.execute("SELECT * FROM teams WHERE id=?", (team["id"],)).fetchone()
@@ -711,7 +738,7 @@ class EventHandler(BaseHTTPRequestHandler):
         service = self.server.service
         try:
             parsed = urlsplit(self.path)
-            if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+            if parsed.scheme or parsed.netloc or parsed.fragment:
                 raise APIError(400, "请求地址格式不正确")
             path = unquote(parsed.path, errors="strict")
             if "\\" in path or "\x00" in path or any(p in {".", ".."} for p in path.split("/")):
@@ -722,6 +749,17 @@ class EventHandler(BaseHTTPRequestHandler):
             if service.base_path and not path.startswith(service.base_path + "/"):
                 raise APIError(404, "页面不存在")
             path = path[len(service.base_path):] if service.base_path else path
+            query={}
+            if parsed.query:
+                if self.command!='GET' or not path.startswith('/api/admin/data/'):
+                    raise APIError(400,'此接口不接受查询参数')
+                try:
+                    params=parse_qs(parsed.query,keep_blank_values=True,strict_parsing=True,max_num_fields=20,encoding='utf-8',errors='strict')
+                except (ValueError,UnicodeError):
+                    raise APIError(400,'查询参数格式不正确')
+                if any(len(values)!=1 or len(key)>80 or len(values[0])>2000 for key,values in params.items()):
+                    raise APIError(400,'查询参数不能重复或超长')
+                query={key:values[0] for key,values in params.items()}
             if path.startswith("/api/"):
                 if self.command == "HEAD":
                     raise APIError(405, "接口不支持此方法")
@@ -735,8 +773,9 @@ class EventHandler(BaseHTTPRequestHandler):
                         length = int(self.headers.get("Content-Length", "-1"))
                     except ValueError:
                         raise APIError(400, "请求长度不正确")
-                    if length < 0 or length > (SUBMISSION_BODY_LIMIT if path=="/api/submission" else BODY_LIMIT):
-                        raise APIError(413, "请求内容超过32KB限制" if path=="/api/submission" else "请求内容超过16KB限制")
+                    limit=SUBMISSION_BODY_LIMIT if path=='/api/submission' else IMPORT_BODY_LIMIT if path=='/api/admin/data/import/preview' else BODY_LIMIT
+                    if length < 0 or length > limit:
+                        raise APIError(413,'请求内容超过端点大小限制')
                     if self.headers.get_content_type() != "application/json":
                         raise APIError(415, "请使用JSON请求")
                     try:
@@ -752,14 +791,15 @@ class EventHandler(BaseHTTPRequestHandler):
                         peer = str(ipaddress.ip_address(proxy_ip))
                     except ValueError:
                         pass
-                value, token, cookie_action = service.dispatch(self.command, path, body, self.headers.get("Cookie", ""), peer)
+                value, token, cookie_action = service.dispatch(self.command, path, body, self.headers.get("Cookie", ""), peer,query=query)
                 cookie = None
                 if cookie_action:
                     cookie = f"{COOKIE_NAME}={token or ''}; Path={service.base_path or '/'}; HttpOnly; SameSite=Strict; Max-Age={SESSION_SECONDS if cookie_action == 'set' else 0}"
                     if service.secure:
                         cookie += "; Secure"
                 if isinstance(value, bytes):
-                    self.headers_out(200, "text/csv; charset=utf-8", len(value), extra={"Content-Disposition": 'attachment; filename="gotc-submissions.csv"' if path=="/api/admin/submissions/export" else 'attachment; filename="gotc-scores.csv"'})
+                    filename='gotc-submissions.csv' if path=='/api/admin/submissions/export' else 'gotc-data.csv' if path.startswith('/api/admin/data/') else 'gotc-scores.csv'
+                    self.headers_out(200, "text/csv; charset=utf-8", len(value), extra={"Content-Disposition": f'attachment; filename="{filename}"'})
                     self.wfile.write(value)
                 else:
                     self.respond(200, value, cookie)

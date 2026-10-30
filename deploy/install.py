@@ -23,6 +23,17 @@ OLD_SERVICES = ['etown-hackathon', 'nginx', 'realtalk-api', 'dapm']
 BEGIN = '    # BEGIN GOTC HACKATHON MANAGED LOCATION\n'
 END = '    # END GOTC HACKATHON MANAGED LOCATION\n'
 LOCATIONS = BEGIN + '''    location = /gotc { return 308 /gotc/; }
+    location = /gotc/api/admin/data/import/preview {
+        proxy_pass http://127.0.0.1:5274;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
+        client_max_body_size 2m;
+    }
     location ^~ /gotc/ {
         proxy_pass http://127.0.0.1:5274;
         proxy_http_version 1.1;
@@ -66,7 +77,7 @@ MemoryMax=512M
 [Install]
 WantedBy=multi-user.target
 '''
-FILES = {'index.html', 'styles.css', 'app.js', 'platform.html', 'platform.css', 'platform.js', 'favicon.svg'}
+FILES = {'index.html', 'styles.css', 'app.js', 'platform.html', 'platform.css', 'platform.js', 'platform-admin.js', 'favicon.svg'}
 ASSETS = {'.webp', '.png', '.jpg', '.jpeg', '.svg', '.ico', '.woff', '.woff2'}
 
 
@@ -85,7 +96,7 @@ def allowed(name):
     if any(re.search(r'(?:secret|credential|admin-access|production\.env)', p, re.I) for p in parts):
         return False
     suffix = Path(name).suffix.lower()
-    return (name in FILES or
+    return (name in FILES or name == 'scripts/backup_event.py' or
             (parts[0] == 'server' and suffix == '.py' and len(parts) == 2 and not parts[-1].startswith('test')) or
             (parts[0] == 'assets' and suffix in ASSETS) or
             (parts[0] == 'downloads' and suffix in {'.ics', '.txt'}))
