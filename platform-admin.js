@@ -1,5 +1,90 @@
 'use strict';
 
+// A small single-flight cursor check; only an applied read advances the cursor.
+function makeAdminReviewSync(options){
+  const {getContext,readMarker,readStage,apply,applyWindow,status,isHidden,subscribe,schedule,cancel}=options;
+  let started=false,stopped=false,busy=false,pendingKick=false,timer=null,request=null,timeout=null,applied=null,failures=0;
+  const clear=()=>{if(timer!==null)cancel(timer);timer=null;};
+  const current=context=>!stopped && !isHidden() && getContext()?.key===context.key;
+  const arm=delay=>{clear();if(started && !stopped && !isHidden())timer=schedule(check,delay);};
+  async function fetchOne(fn){
+    const controller=new AbortController();request=controller;
+    timeout=schedule(()=>controller.abort(),8000);
+    try{return await fn(controller.signal);}
+    finally{cancel(timeout);timeout=null;if(request===controller)request=null;}
+  }
+  async function check(){
+    timer=null;if(stopped || isHidden() || busy)return;
+    const context=getContext();if(!context){arm(3000);return;}
+    busy=true;let delay=3000;
+    try{
+      const marker=await fetchOne(readMarker);if(!current(context))return;
+      const object=value=>value!==null && typeof value==='object' && !Array.isArray(value);
+      if(!object(marker) || !Number.isSafeInteger(marker.reviewRevision) || marker.reviewRevision<0 || !object(marker.stages))throw new Error('Invalid review revision');
+      for(const name of ['exhibition','roadshow']){
+        const value=marker.stages[name];
+        if(!object(value) || typeof value.runId!=='string' || !value.runId || !Number.isSafeInteger(value.revision) || value.revision<0 || typeof value.canEdit!=='boolean')throw new Error('Invalid stage revision');
+      }
+      const config=marker.stages[context.stage];
+      if(!config || config.runId!==context.runId || config.revision!==context.revision){status('configuration');return;}
+      applyWindow(config.canEdit,context);
+      if(applied===null || applied!==marker.reviewRevision){
+        const data=await fetchOne(signal=>readStage(context.stage,signal));if(!current(context))return;
+        if(data.stage?.id!==context.stage || data.stage?.runId!==context.runId || data.stage?.revision!==context.revision){status('configuration');return;}
+        if(apply(data,context)!==true)return;
+        applied=marker.reviewRevision;status('updated');
+      }else status('idle');
+      failures=0;
+    }catch(error){
+      if(!current(context))return;
+      if(error.status===401 || error.status===403){stop();status('auth');return;}
+      failures++;delay=Math.min(30000,3000*2**Math.min(failures,4));status('error');
+    }finally{
+      busy=false;
+      if(!stopped && !isHidden()){const next=pendingKick?0:delay;pendingKick=false;arm(next);}
+    }
+  }
+  function kick(){if(!started || stopped)return;if(isHidden()){clear();return;}if(busy){pendingKick=true;return;}arm(0);}
+  const unsubscribe=subscribe(()=>{if(isHidden())clear();else kick();});
+  function stop(){stopped=true;clear();if(timeout!==null)cancel(timeout);timeout=null;request?.abort();request=null;unsubscribe?.();}
+  return {start(){if(started || stopped)return;started=true;kick();},kick,stop};
+}
+
+let adminReviewSync=null;
+function disposeAdminReviewSync(){adminReviewSync?.stop();adminReviewSync=null;}
+function kickAdminReviewSync(){adminReviewSync?.kick();}
+function startAdminReviewSync(view){
+  disposeAdminReviewSync();
+  const context=()=>{
+    if(route!=='admin' || view.routeVersion!==routeVersion || !view.container.isConnected || adminReadOnlyView!==view || view.stage!==adminStage || adminLoadPending!==null)return null;
+    return {key:[routeVersion,adminJudgingVersion,view.stage,view.runId,view.revision].join(':'),stage:view.stage,runId:view.runId,revision:view.revision,view};
+  };
+  const messages={idle:'本轮正式数与评审记录自动同步 · 每 3 秒检查',updated:'本轮评审记录已同步 · 每 3 秒检查',
+    configuration:'轮次或设置已变化，请刷新数据核对。当前输入已保留。',
+    error:'自动同步暂不可用，稍后重试。当前内容和输入已保留。',
+    auth:'自动同步已停止：登录已失效或无权访问。请重新登录，当前输入已保留。'};
+  const status=kind=>{
+    if(route!=='admin' || adminReadOnlyView!==view || !view.container.isConnected)return;
+    const node=document.getElementById('admin-sync-status');if(!node)return;
+    const text=messages[kind];if(node.textContent!==text)node.textContent=text;
+    node.classList.toggle('warning',kind==='configuration' || kind==='error' || kind==='auth');
+  };
+  adminReviewSync=makeAdminReviewSync({
+    getContext:context,isHidden:()=>document.hidden,
+    readMarker:signal=>api('admin/data/sync',undefined,{signal}),
+    readStage:(stage,signal)=>api(`admin/judging/${stage}`,undefined,{signal}),
+    apply:(data,current)=>patchAdminReviewData(current.view,data),
+    applyWindow:(canEdit,current)=>{
+      if(adminReadOnlyView!==current.view)return;
+      const node=document.getElementById('admin-stage-window-status');
+      if(node){node.textContent=canEdit?'评审记录开放中':'当前只读';node.classList.toggle('closed',!canEdit);}
+    },status,
+    subscribe:listener=>{document.addEventListener('visibilitychange',listener);return ()=>document.removeEventListener('visibilitychange',listener);},
+    schedule:(fn,delay)=>setTimeout(fn,delay),cancel:id=>clearTimeout(id)
+  });
+  adminReviewSync.start();
+}
+
 // Admin-only tools share the existing API, session and edit tracking.
 function adminQuery(path,values={}){
   const query=new URLSearchParams();

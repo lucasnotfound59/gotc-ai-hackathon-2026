@@ -350,6 +350,16 @@ class AdminDataService:
                             'after':json.loads(row['after_json']),'reason':row['reason']} for row in rows],
                 'historyAvailableFrom':int(db.execute("SELECT value FROM admin_data_meta WHERE key='historyAvailableFrom'").fetchone()[0])}
 
+    def sync_marker(self, db):
+        # A history ID catches same-millisecond changes without loading feedback or materials.
+        revision = db.execute('SELECT COALESCE(MAX(id),0) FROM judging_review_history').fetchone()[0]
+        current = self.now()
+        stages = {}
+        for row in db.execute('SELECT stage,run_id,revision,open,deadline FROM judging_stages ORDER BY stage'):
+            stages[row['stage']] = {'runId':row['run_id'], 'revision':row['revision'],
+                                    'canEdit':self.s.judging.window(row,current)['canEdit']}
+        return {'reviewRevision':revision, 'stages':stages}
+
     def set_validity(self, db, actor, body):
         if set(body)!={'runId','teamId','judgeId','expectedVersion','invalidated','reason'}:
             raise APIError(400,'作废或恢复字段不正确')
@@ -464,10 +474,11 @@ class AdminDataService:
             if action=='import/commit':return self.commit_import(db,actor,body,session_hash)
             if action=='review-validity':return self.set_validity(db,actor,body)
         if method=='GET':
-            allowed={'template':{'kind'},'runs':{'stage'},'reviews':{'stage','runId','teamId','judgeId','track','status'},
+            allowed={'sync':set(),'template':{'kind'},'runs':{'stage'},'reviews':{'stage','runId','teamId','judgeId','track','status'},
                      'review-history':{'runId','teamId','judgeId'},'audit':{'action','actorId','target','beforeId','limit'},
                      'export':{'kind','stage','runId','teamId','judgeId','track','status','action','actorId','target','beforeId','limit'}}
             if action not in allowed or not set(query).issubset(allowed[action]):raise APIError(400,'查询字段或接口不正确')
+            if action=='sync':return self.sync_marker(db)
             if action=='template':
                 if query.get('kind') not in {'teams','judges'}:raise APIError(400,'导入分类不正确')
                 return self.csv_bytes(TEAM_FIELDS if query['kind']=='teams' else ['id','name'],[])
