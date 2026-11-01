@@ -55,3 +55,6 @@ test('request id stays bound through unknown and exact acknowledgement rejects a
   const storage=new Storage(),writer=make(storage),requestId='request-1234567890',sent=writer.write(raw,'pending','submitted',requestId);assert.equal(sent.record.request.requestId,requestId);writer.result(sent,'unknown');assert.equal(make(storage).candidates().items[0].record.request.requestId,requestId);const changed=JSON.parse(storage.getItem(sent.key));changed.request.requestId='another-request-123456';storage.setItem(sent.key,JSON.stringify(changed));assert.equal(writer.acknowledge(sent),false);assert.ok(storage.getItem(sent.key));
   changed.request.requestId=1234567890123456;storage.setItem(sent.key,JSON.stringify(changed));assert.equal(make(storage).candidates().items.length,0);
 });
+test('a replacement store inherits the original epoch and cannot adopt a later logout generation',()=>{
+  const storage=new Storage(),writer=make(storage),expectedEpoch=writer.epoch;writer.write(raw);writer.purge();const inherited=make(storage,{expectedEpoch});assert.equal(inherited.epoch,expectedEpoch);assert.equal(inherited.revoked,true);assert.equal(inherited.write(raw),null);const newlyAuthorized=make(storage);assert.notEqual(newlyAuthorized.epoch,expectedEpoch);assert.ok(newlyAuthorized.write({...raw,summary:'EXPLICIT_NEW_AUTH'}));assert.equal(inherited.acknowledge(null),false);
+});
