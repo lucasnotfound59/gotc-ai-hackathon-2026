@@ -3,12 +3,12 @@
 (() => {
   const TTL=7*24*60*60*1000;
   const freshId=()=>globalThis.crypto?.randomUUID?.() || `local-${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
-  function create({storage,namespace,teamId,writerId=freshId(),baseVersion,baseMaterials,fields,now=()=>Date.now(),id=freshId}){
+  function create({storage,namespace,teamId,writerId=freshId(),baseVersion,baseMaterials,fields,now=()=>Date.now(),id=freshId,expectedEpoch}){
     const prefix=`gotc-material-recovery:v1:${encodeURIComponent(namespace)}:${encodeURIComponent(teamId)}:`,epochKey=prefix+'epoch';
-    let activeId=id(),revision=0,error='',revoked=false,epoch='';
+    let activeId=id(),revision=0,error='',revoked=false,epoch=expectedEpoch ?? '';
     const object=value=>value!==null && typeof value==='object' && !Array.isArray(value);
     function access(){const target=storage();if(!target)throw new Error('storage unavailable');return target;}
-    try{epoch=access().getItem(epochKey) || '';}catch{error='本地恢复不可用，请保存服务器草稿或复制当前输入。';}
+    try{if(expectedEpoch===undefined)epoch=access().getItem(epochKey) || '';else checkEpoch();}catch{error='本地恢复不可用，请保存服务器草稿或复制当前输入。';}
     function fail(){error='本地恢复不可用，请保存服务器草稿或复制当前输入。';return null;}
     function validMaterials(value){return object(value) && Object.keys(value).length===fields.length && fields.every(([key,limit])=>Object.hasOwn(value,key) && typeof value[key]==='string' && Array.from(value[key]).length<=limit);}
     function read(key,raw){
@@ -62,7 +62,7 @@
         for(const key of keys){if(target.getItem(epochKey)!==next){error='本地清理代次已变化，未继续删除。';return false;}const raw=target.getItem(key),snapshot=read(key,raw);if(snapshot?.record.epoch===next)continue;if(target.getItem(key)===raw && target.getItem(epochKey)===next)target.removeItem(key);}return target.getItem(epochKey)===next;
       }catch{fail();return false;}
     }
-    return {write,candidates,result,acknowledge,discard,purge,checkEpoch,rebase(version,materials){baseVersion=version;baseMaterials={...materials};},fork(){activeId=id();revision=0;},get error(){return error;},get revoked(){return revoked;},get prefix(){return prefix;}};
+    return {write,candidates,result,acknowledge,discard,purge,checkEpoch,rebase(version,materials){baseVersion=version;baseMaterials={...materials};},fork(){activeId=id();revision=0;},get error(){return error;},get revoked(){return revoked;},get prefix(){return prefix;},get epoch(){return epoch;}};
   }
   globalThis.GotcDraftRecovery={create,freshId,TTL};
 })();
