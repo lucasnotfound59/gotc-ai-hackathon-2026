@@ -108,3 +108,8 @@ test('stage action patches only matching read-only adoption cards and keeps othe
   context.patch({stage:{id:'exhibition',runId:'RESET_RUN',frozenAt:null},teams:[{id:'T1',materialSnapshot:null}]});
   assert.match(slot.outerHTML,/尚未生成材料快照/);assert.ok(!slot.outerHTML.includes('ACTUAL_FROZEN'));
 });
+
+test('GitHub dot-prefixed repositories pass the real formal preflight for full SHA and commit URLs',()=>{
+  const sha='a'.repeat(40),materials={projectName:'Synthetic',summary:'Synthetic',codeUrl:'https://github.com/github/.github',readmeUrl:'https://example.test/readme',license:'MIT',demoInstructions:'Local demo',slidesUrl:'https://example.test/slides',videoUrl:'https://example.test/video',sourcesAndLimitations:'Synthetic only',confirmed:true};
+  for(const codeVersion of [sha,'https://github.com/github/.github/commit/'+sha])assert.equal(h.submissionProblems({...materials,codeVersion},true).length,0,codeVersion);
+});

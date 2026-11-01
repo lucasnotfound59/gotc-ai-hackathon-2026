@@ -304,7 +304,8 @@ function repositoryParts(value,commit=false){
     let parts=url.pathname.replace(/\/+$/,'').slice(1).split('/'),sha=null;
     if(commit){const tail=host==='gitlab.com'?3:2;if(parts.length<tail+2 || parts.slice(-tail,-1).join('/')!==(host==='gitlab.com'?'-/commit':'commit') || !fullCommit(parts.at(-1)))return null;sha=parts.at(-1).toLowerCase();parts=parts.slice(0,-tail);}
     parts[parts.length-1]=parts.at(-1).replace(/\.git$/,'');
-    if(parts.length<2 || (host!=='gitlab.com' && parts.length!==2) || parts.some(p=>! /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(p) || ['.','..'].includes(p)))return null;
+    // Match the server's GitHub-only, repository-segment allowance for names such as .github.
+    if(parts.length<2 || (host!=='gitlab.com' && parts.length!==2) || parts.some((p,index)=>!(host==='github.com' && index===parts.length-1?/^[A-Za-z0-9_.][A-Za-z0-9_.-]*$/:/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/).test(p) || ['.','..'].includes(p)))return null;
     const path=parts.join('/');return {host,path:host==='gitlab.com'?path:path.toLowerCase(),sha};
   }catch{return null;}
 }

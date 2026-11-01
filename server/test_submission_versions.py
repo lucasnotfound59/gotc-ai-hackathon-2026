@@ -26,6 +26,24 @@ class VersionSubmissionTests(unittest.TestCase):
                 else:
                     self.assertEqual(normalize_code_version(case['repository'],case['version']),case['expected'])
 
+    def test_dot_prefixed_github_repository_accepts_formal_hash_and_commit_link(self):
+        self.open_submissions()
+        sha='A'*40
+        for index,(repository,version) in enumerate([
+            ('https://github.com/github/.github',sha),
+            ('https://github.com/github/.github','B'*64),
+            ('https://github.com/github/.github','https://github.com/github/.github/commit/'+sha),
+            ('https://github.com/github/.github.git/','https://github.com/GitHub/.github/commit/'+sha),
+        ],1):
+            with self.subTest(repository=repository,version=version):
+                client,_=self.access(self.team(index,'Synthetic dot repository '+str(index)))
+                materials=self.materials(codeUrl=repository,codeVersion=version)
+                self.assertEqual(self.save(client,status='draft',materials=materials)[0],200)
+                status,result,_=self.save(client,1,materials=materials)
+                self.assertEqual(status,200,result)
+                self.assertEqual(result['submission']['submitted']['codeVersion'],('b'*64 if version=='B'*64 else 'a'*40))
+                self.assertEqual(client.get('/api/team')[1]['submission']['submittedVersion'],2)
+
     def test_normalized_formal_draft_partial_legacy_and_readback(self):
         client,_=self.access(self.team())
         self.open_submissions()

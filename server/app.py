@@ -136,7 +136,8 @@ def repository_parts(value, commit=False):
         if not parts or not parts[-1]:
             return None
         parts[-1]=re.sub(r'\.git$','',parts[-1])
-        if len(parts)<2 or (host!='gitlab.com' and len(parts)!=2) or any(not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*',part) or part in {'.','..'} for part in parts):
+        # GitHub repository names may start with a dot; owners and other hosts keep their existing grammar.
+        if len(parts)<2 or (host!='gitlab.com' and len(parts)!=2) or any(not re.fullmatch(r'[A-Za-z0-9_.][A-Za-z0-9_.-]*' if host=='github.com' and index==len(parts)-1 else r'[A-Za-z0-9_][A-Za-z0-9_.-]*',part) or part in {'.','..'} for index,part in enumerate(parts)):
             return None
         # GitHub/Gitee names are case-insensitive; GitLab subgroup paths are kept exact.
         path='/'.join(parts)
